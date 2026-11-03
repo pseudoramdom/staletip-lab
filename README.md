@@ -152,9 +152,11 @@ instances, since the RPC chain name alone does not distinguish their challenges.
 
 The included Compose file runs two observers: Testnet4 at **127.0.0.1:8766** and
 Signet at **127.0.0.1:8767**. It is intended for Docker Engine on a **Linux VPS**
-with the existing nodes' RPC services reachable on the host's loopback interface.
-Host networking lets the observers reach those RPC ports without exposing them.
-No Bitcoin processes or blockchain data are included in the image.
+with the existing nodes' RPC services reachable from the host, either on loopback
+or at a private Docker address. Host networking lets the observers reach those
+RPC ports without publishing additional ports. The observer image contains no
+Bitcoin binaries or blockchain data. An optional, separate Bitcoin peer image is
+described below.
 
 1. Run `cp examples/observer.env.example .env` and edit its paths and numeric
    UID/GID values. `TESTNET4_DATADIR` and `SIGNET_DATADIR` must point to the
@@ -202,6 +204,158 @@ the observers. Neither command changes or stops your existing Bitcoin nodes.
 A node restart or temporary RPC outage is reflected in the interface, and the
 observer retries without restarting that node. The image's HTTP health check
 checks the visualizer, not the availability of the independently managed nodes.
+
+## Optional Testnet4 relay peer
+
+The `testnet4-relay-peer` service adds a real BIP332 node **B** alongside the
+observers through `compose.relay-test.yaml`. Include that file and select the
+`relay-test` profile (or explicitly request the service) to enable B. Ordinary
+`docker compose up -d` still starts only the observers. The lab UI observes B; Docker Compose manages its lifecycle.
+Your existing node **A** remains outside this Compose project.
+
+B uses Linux host networking and makes its sole automatic P2P connection to
+the endpoint in `TESTNET4_RELAY_PEER`. A must already accept P2P connections
+there and have the historical blocks needed for B's initial sync. Disabling pruning on A
+does not restore previously deleted blocks. The service does not change A's
+listener, whitelist, firewall, or container configuration.
+
+B runs with `staletips=blocks`, `prune=10000`, no inbound P2P listener, and RPC on
+**127.0.0.1:49332**. The pruning target is 10,000 MiB of block/undo files; chain
+state and logs require additional space. It still downloads and validates the
+active chain. `connect` restricts automatic outbound connections to A; turning
+off address discovery alone would not do that. No `noban` whitelist is required.
+
+### Prepare and build
+
+1. Complete the observer `.env` setup above. Set `TESTNET4_RELAY_DATA` to a new,
+   dedicated **root datadir** for B (default `./relay-peer-data`). Never use A's
+   datadir. B uses the observer's `TESTNET4_UID` and `TESTNET4_GID` so the observer
+   can read its authentication cookie without making it readable by everyone.
+   Create the directory, substituting the numeric IDs from `.env`:
+
+```sh
+sudo install -d -m 0700 -o 1000 -g 1000 ./relay-peer-data
+```
+
+2. Copy the two-node observer example to an ignored local configuration:
+
+```sh
+mkdir -p observer-config
+cp examples/observer-testnet4-relay.json observer-config/testnet4-relay.json
+```
+
+   Set these lines in `.env`, replacing the documentation address with A's
+   reachable P2P endpoint. The relay setup requires `TESTNET4_RELAY_PEER`; the
+   monitoring-only Compose file does not. Keep deployment addresses in ignored
+   `.env` and `observer-config/` files, not in the tracked examples.
+
+```ini
+TESTNET4_RELAY_PEER=192.0.2.10:48333
+TESTNET4_RELAY_OBSERVER_CONFIG=./observer-config/testnet4-relay.json
+```
+
+   Edit A's entry to match the RPC endpoint and authentication already working
+   in your observer. The example uses `192.0.2.10`, a documentation-only
+   placeholder, and the existing `/bitcoin` cookie/log mount. Replace A's
+   `rpc_url` and `p2p_address` in your local JSON; JSON does not expand `.env`
+   variables. Use A's P2P address as reported by B's `getpeerinfo` so the graph
+   can identify their connection. If A uses environment-based credentials,
+   preserve those environment variables on the
+   observer service. B's entry uses `/relay-peer/testnet4/.cookie` and
+   `/relay-peer/testnet4/debug.log`, both mounted read-only. B has no listening
+   P2P address; its outbound connection identifies the edge.
+
+3. Validate the combined configuration and build the separate Bitcoin image:
+
+```sh
+docker compose -f compose.yaml -f compose.relay-test.yaml --profile relay-test config --quiet
+docker compose -f compose.yaml -f compose.relay-test.yaml --profile relay-test build testnet4-relay-peer
+```
+
+The image builds `bitcoind` and `bitcoin-cli` from the published
+`pseudoramdom/bitcoin` BIP332 branch, pinned by default to commit
+`073a114dde430cc783564b35cae4e232e8a6aeb4`. `BITCOIN_REVISION` can select another
+full 40-character commit hash available in that repository. The build verifies
+the checked-out hash and requires `-staletips` support. It uses a separate,
+allowlisted build context; local runs, node data, and credentials are never sent
+to the builder. Wallet, GUI, and IPC support are omitted.
+
+Compilation can take a while and needs several GiB of memory. The default is
+two compilation jobs; set `BITCOIN_BUILD_JOBS=1` in `.env` for a smaller VPS.
+
+### Start and verify
+
+Start the observer before B so it can watch B's new log from the beginning:
+
+```sh
+docker compose -f compose.yaml -f compose.relay-test.yaml up --build -d testnet4
+docker compose -f compose.yaml -f compose.relay-test.yaml --profile relay-test up -d testnet4-relay-peer
+```
+
+The first command may recreate the Testnet4 **observer** to add B's read-only
+mount and configuration. Neither command restarts A or the Signet node. Open the
+usual Testnet4 interface through your SSH tunnel. Use both `-f` arguments for
+subsequent Testnet4 observer updates so its two-node configuration is retained.
+
+Check B's RPC health, initial sync, and peer list:
+
+```sh
+docker compose -f compose.yaml -f compose.relay-test.yaml --profile relay-test ps testnet4-relay-peer
+docker compose -f compose.yaml -f compose.relay-test.yaml exec testnet4-relay-peer bitcoin-cli -datadir=/data -testnet4 -rpcport=49332 getblockchaininfo
+docker compose -f compose.yaml -f compose.relay-test.yaml exec testnet4-relay-peer bitcoin-cli -datadir=/data -testnet4 -rpcport=49332 getpeerinfo
+```
+
+The peer address should match A's configured endpoint (its resolved IP if you
+used a hostname). A healthy container means RPC is
+responding, not that IBD has finished or that A is connected. After sync, inspect
+B's retained stale tips and per-connection message counters (requires `jq`):
+
+```sh
+docker compose -f compose.yaml -f compose.relay-test.yaml exec -T testnet4-relay-peer bitcoin-cli -datadir=/data -testnet4 -rpcport=49332 getnetworkinfo | jq '.staletips'
+docker compose -f compose.yaml -f compose.relay-test.yaml exec -T testnet4-relay-peer bitcoin-cli -datadir=/data -testnet4 -rpcport=49332 getpeerinfo | jq '.[] | {addr, received_staletip_bytes: (.bytesrecv_per_msg.staletip // 0)}'
+```
+
+A must be out of IBD, have an eligible stale tip, and know that B has its fork
+point before it announces the branch. Difficulty-1 stale tips are filtered by
+this implementation. B requests eligible missing stale blocks when the sender
+advertises availability. A zero message count or empty stale-tip cache can be
+normal; Testnet4 does not guarantee a qualifying fork on demand. Use regtest for
+repeatable fork experiments.
+
+The observer reads live `debug=net` logs; it does not reconstruct negotiation
+that occurred before observation began. If necessary, restart **only B** while
+the observer is running to observe a fresh handshake:
+
+```sh
+docker compose -f compose.yaml -f compose.relay-test.yaml restart testnet4-relay-peer
+```
+
+### Storage and shutdown
+
+B's chain data survives container recreation in `TESTNET4_RELAY_DATA`. The
+default local directory is ignored by Git. Docker's console logs are bounded to
+three 10 MiB files, but B's separate `testnet4/debug.log` needs host-side log
+rotation during long runs. The observer never rotates external-node logs. When
+using rename-based rotation, signal B to reopen its log:
+
+```sh
+docker compose -f compose.yaml -f compose.relay-test.yaml kill -s SIGHUP testnet4-relay-peer
+```
+
+Stop only B with:
+
+```sh
+docker compose -f compose.yaml -f compose.relay-test.yaml stop testnet4-relay-peer
+```
+
+To stop both observers and B, while retaining B's files:
+
+```sh
+docker compose -f compose.yaml -f compose.relay-test.yaml --profile relay-test down
+```
+
+A is not a service in this project and remains running. B has a five-minute
+shutdown grace period to flush its chain state before Docker would force a stop.
 
 ## First experiment
 

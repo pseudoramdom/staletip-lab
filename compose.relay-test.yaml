@@ -1,0 +1,63 @@
+services:
+  testnet4:
+    volumes:
+      - type: bind
+        source: "${TESTNET4_RELAY_OBSERVER_CONFIG:-./examples/observer-testnet4-relay.json}"
+        target: /config/nodes.json
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: "${TESTNET4_RELAY_DATA:-./relay-peer-data}"
+        target: /relay-peer
+        read_only: true
+        bind:
+          create_host_path: false
+  testnet4-relay-peer:
+    profiles: [relay-test]
+    image: staletip-bitcoin:local
+    build:
+      context: ./docker/bitcoin
+      args:
+        BITCOIN_REVISION: "${BITCOIN_REVISION:-073a114dde430cc783564b35cae4e232e8a6aeb4}"
+        BUILD_JOBS: "${BITCOIN_BUILD_JOBS:-2}"
+    network_mode: host
+    user: "${TESTNET4_UID:-1000}:${TESTNET4_GID:-1000}"
+    restart: unless-stopped
+    stop_grace_period: 5m
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    tmpfs: [/tmp]
+    command:
+      - -datadir=/data
+      - -testnet4
+      - -server=1
+      - -staletips=blocks
+      - -prune=10000
+      - "-connect=${TESTNET4_RELAY_PEER:?Set TESTNET4_RELAY_PEER to node A's reachable P2P host:port in .env}"
+      - -listen=0
+      - -dnsseed=0
+      - -discover=0
+      - -rpcbind=127.0.0.1
+      - -rpcallowip=127.0.0.1
+      - -rpcport=49332
+      - -debug=net
+      - -printtoconsole=1
+    healthcheck:
+      test: ["CMD", "bitcoin-cli", "-datadir=/data", "-testnet4", "-rpcport=49332", "getblockchaininfo"]
+      interval: 30s
+      timeout: 10s
+      start_period: 60s
+      retries: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    volumes:
+      - type: bind
+        source: "${TESTNET4_RELAY_DATA:-./relay-peer-data}"
+        target: /data
+        bind:
+          create_host_path: false
