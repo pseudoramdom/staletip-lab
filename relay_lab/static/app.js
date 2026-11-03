@@ -17,11 +17,31 @@ const kindClass = kind => /^[a-z]+$/.test(kind || "") ? kind : "action";
 const activeJobs = () => state.jobs.filter(job => ["queued", "running"].includes(job.status));
 const outsideWindow = (node, block) => block && Number.isFinite(block.height) && block.height < Math.max(0, Number(node.height || 0) - Number(state.session.window_blocks || 80) + 1);
 const modes = '<option value="headers">Headers · relay without fetching</option><option value="blocks">Blocks · relay and fetch</option><option value="none">None · feature disabled</option>';
+const isManaged = id => state.nodes.some(node => node.id === id);
+const hashesOf = event => { const d = event.details || {}; return [...(d.hashes || []), d.tip, d.hash].filter(Boolean); };
+const duration = ms => ms < 10 ? `${+ms.toFixed(1)} ms` : ms < 1000 ? `${Math.round(ms)} ms` : `${(ms / 1000).toFixed(ms < 10000 ? 2 : 1)} s`;
+const bytes = value => value >= 10240 ? `${(value / 1024).toFixed(1)} KiB` : `${Math.round(value)} B`;
+const RELAYED = ["staletip", "headers", "block", "cmpctblock"];
+const STATUS_LABEL = {active: "Active chain", data: "Full block", headers: "Header only", reorged: "Reorged out", invalid: "Invalid", unknown: "Not known"};
+const TYPES = [
+  ["all", "All", () => true],
+  ["staletip", "Stale relay", event => event.kind === "staletip"],
+  ["blocks", "Block relay", event => ["getdata", "block", "cmpctblock", "headers", "inv", "notfound"].includes(event.kind)],
+  ["handshake", "Negotiation", event => ["version", "verack", "feature"].includes(event.kind)],
+  ["action", "Lab activity", event => !["sent", "recv"].includes(event.direction)]
+];
+const icon = (path, extra = "") => `<svg class="icon" viewBox="0 0 16 16" aria-hidden="true" ${extra}>${path}</svg>`;
+const CLOSE = icon('<path d="M4.5 4.5L11.5 11.5M11.5 4.5L4.5 11.5"/>');
+const COPY = icon('<rect x="5.5" y="5.5" width="8" height="8" rx="1.5"/><path d="M10.5 3.5V3A1 1 0 0 0 9.5 2H3.5A1 1 0 0 0 2.5 3V9.5A1 1 0 0 0 3.5 10.5H4"/>');
+const ARROW = icon('<path d="M3 8H12.5M9 4.5L12.5 8L9 11.5"/>');
+const CHEVRON = icon('<path d="M4.5 6.5L8 10L11.5 6.5"/>');
 
 let state = {session: {}, nodes: [], external_peers: [], blocks: [], links: [], events: [], jobs: []};
 let selected = {type: "node", id: null};
 let selectedNode = null;
 let selectedHash = null;
+let blockFilter = null;
+let hoveredEvent = null;
 let zoom = 1;
 let pausedEvents = null;
 let newPackets = [];
@@ -30,6 +50,15 @@ let knownJobIds = new Set();
 let dismissedJob = null;
 let receivedState = false;
 let stream;
+
+// Live snapshots arrive about once a second. Replacing unchanged markup would
+// swallow clicks that land between mousedown and mouseup.
+function setHTML(element, html) {
+  if (element._html !== html) {
+    element.innerHTML = html;
+    element._html = html;
+  }
+}
 
 function toast(message, error = false) {
   const node = document.createElement("div");
@@ -41,7 +70,7 @@ function toast(message, error = false) {
 
 function connection(online) {
   const status = $("#connectionStatus");
-  status.className = "connection-state " + (online ? "online" : "offline");
+  status.className = "live-pill " + (online ? "online" : "offline");
   status.innerHTML = `<i></i>${online ? "Live" : "Reconnecting"}`;
 }
 
@@ -63,10 +92,10 @@ function safeAction(actionName, params) {
 function update(snapshot) {
   const changedSession = receivedState && (state.session.run_dir !== snapshot.session?.run_dir || state.session.observation_id !== snapshot.session?.observation_id);
   if (changedSession) {
-    selected = {type: "node", id: null}; selectedNode = null; selectedHash = null;
-    pausedEvents = null; newPackets = []; zoom = 1; receivedState = false;
+    selected = {type: "node", id: null}; selectedNode = null; selectedHash = null; blockFilter = null;
+    pausedEvents = null; newPackets = []; zoom = 1; receivedState = false; hoveredEvent = null;
     knownJobIds.clear(); dismissedJob = null;
-    $("#eventSearch").value = ""; $("#eventKind").value = "all"; $("#eventNode").value = "all";
+    $("#eventSearch").value = ""; $("#eventType").value = "all"; $("#eventNode").value = "all";
     $("#modal").close();
   }
   const oldEvents = new Set(state.events.map(event => String(event.id)));
@@ -87,24 +116,28 @@ function update(snapshot) {
 
 function render() {
   const focused = document.activeElement;
-  const focusRoot = focused?.closest("#networkCanvas, #chainCanvas, #inspector, #eventList, #nodeList");
+  const focusRoot = focused?.closest("#networkCanvas, #chainCanvas, #inspector, #eventList, #nodeList, #summary, #tracePanel, #blockFilter");
   const focusAttribute = ["data-node", "data-peer", "data-link", "data-block", "data-event", "data-mine", "data-lifecycle", "data-connection", "data-action"].find(attribute => focused?.hasAttribute(attribute));
   const focusValue = focusAttribute ? focused.getAttribute(focusAttribute) : null;
   const focusId = focused?.getAttribute("data-id");
   const focusOwner = focused?.getAttribute("data-owner");
-  $("#networkBadge").textContent = (state.session.network || "regtest").toUpperCase();
+  $("#networkCrumb").textContent = monitoring() ? "Testnet4 monitor" : "Regtest lab";
+  const started = new Date(Number(state.session.started_at) * 1000);
+  $("#sessionCrumb").textContent = monitoring() ? "Persistent profile" : Number.isNaN(started.getTime()) ? "Session" : `Session ${started.toLocaleDateString([], {day: "numeric", month: "short"})}, ${started.toLocaleTimeString([], {hour12: false, hour: "2-digit", minute: "2-digit"})}`;
   $("#workspaceTitle").textContent = monitoring() ? "Testnet4 monitor" : "Regtest workspace";
-  $("#workspaceDescription").textContent = monitoring() ? "Follow synchronization, peer negotiation, and observed stale-tip relay." : "Follow a fork, from the first header to the last relay.";
-  $("#welcomeEyebrow").textContent = monitoring() ? "PUBLIC NETWORK · LOCAL OBSERVATION" : "YOUR FIRST EXPERIMENT";
   $("#welcomeTitle").textContent = monitoring() ? "Your window into testnet4." : "Three nodes. One shared chain.";
   $("#welcomeDescription").textContent = monitoring() ? "Start a node from your BIP332 branch, discover public peers, and watch it synchronize. Its downloaded chain is retained between visits." : "Start A → B → C with five common blocks. Create a fork on A, then watch its announcement reach B and C.";
-  $("#chainDescription").textContent = monitoring() ? "Managed nodes only. Gaps between displayed heights are compressed." : "The same block has the same position in every row.";
+  $("#chainDescription").textContent = monitoring() ? "Managed nodes only; gaps between heights are compressed" : "";
   $("#workspaceFooter").textContent = monitoring() ? "Testnet4 · Persistent monitoring · Mining and forks available on regtest" : "Local experiment · Regtest";
   $("#forkButton").hidden = !supports("forks");
-  $("#nodeCount").textContent = state.nodes.length;
+  $("#forkButton").disabled = !state.nodes.some(node => node.running);
+  $("#mineButton").hidden = !supports("mining");
+  $("#mineButton").disabled = !state.nodes.find(node => node.id === selectedNode)?.running;
+  $("#mineButton").textContent = selectedNode ? `Mine on ${nameOf(selectedNode)}` : "Mine block";
+  $("#linkCount").textContent = state.links.filter(link => link.connected && !externalPeer(link.a) && !externalPeer(link.b)).length || "";
   $("#welcome").hidden = state.nodes.length > 0;
   $("#liveWorkspace").hidden = state.nodes.length === 0;
-  $("#forkButton").disabled = !state.nodes.some(node => node.running);
+  $("#networkPanel").hidden = !monitoring();
   document.querySelectorAll('[data-action="stop-all"]').forEach(button => { button.disabled = !state.nodes.some(node => node.running); });
   document.querySelectorAll('[data-action="reset"]').forEach(button => {
     button.hidden = monitoring();
@@ -117,8 +150,9 @@ function render() {
   renderJobs();
   renderNodes();
   if (state.nodes.length) {
-    renderNetwork(); renderInspector(); renderChains(); renderEvents();
+    renderSummary(); if (monitoring()) renderNetwork(); renderInspector(); renderChains(); renderTrace(); renderEvents();
   }
+  applyLinks();
   // Live snapshots replace SVG and panel contents. Preserve the current
   // keyboard target so a refresh does not interrupt navigation or activation.
   if (focusRoot && focusAttribute && !focused.isConnected) {
@@ -137,14 +171,52 @@ function renderJobs() {
 }
 
 function renderNodes() {
-  $("#nodeList").innerHTML = state.nodes.length ? state.nodes.map((node, index) => `<button class="node-card ${selectedNode === node.id ? "selected" : ""}" data-node="${escape(node.id)}" aria-pressed="${selectedNode === node.id}"><span class="node-card-head"><span class="node-monogram">${escape(node.name?.slice(0, 1) || String(index + 1))}</span><strong>${escape(node.name)}</strong><span class="node-dot ${node.running ? "running" : ""}" aria-label="${node.running ? "Running" : "Stopped"}"></span></span><span class="node-card-meta"><span>${escape(modeLabel(node.mode))}</span><span>${node.running ? `Height ${Number(node.height ?? 0)}` : "Stopped"}</span></span>${monitoring() && node.running ? `<span class="node-card-sync">${node.ibd ? `Syncing · ${percent(node.verification_progress)}` : "Synchronized"}</span>` : ""}${supports("mining") && node.mining?.enabled ? `<span class="node-card-mining">Mining every ${Number(node.mining.interval)}s</span>` : ""}</button>`).join("") : '<p class="empty-sidebar">No nodes yet.<br>Add your first node to begin.</p>';
+  setHTML($("#nodeList"), state.nodes.length ? state.nodes.map(node => {
+    const detail = monitoring() && node.running ? (node.ibd ? `Syncing · ${percent(node.verification_progress)}` : "Synchronized") : supports("mining") && node.mining?.enabled ? `Mining every ${Number(node.mining.interval)}s` : "";
+    return `<button class="node-row ${selectedNode === node.id ? "selected" : ""}" data-node="${escape(node.id)}" aria-pressed="${selectedNode === node.id}" aria-label="${escape(`${node.name}, ${node.running ? `running, ${modeLabel(node.mode)} mode, height ${Number(node.height ?? 0)}` : "stopped"}`)}"><span class="node-dot ${node.running ? "running" : ""}"></span><span class="node-name ${String(node.name).length > 2 ? "long" : ""}">${escape(node.name)}</span><span class="node-mode">${escape(modeLabel(node.mode))}${detail ? `<span class="node-sub">${escape(detail)}</span>` : ""}</span><span class="node-height">${node.running ? Number(node.height ?? 0) : "off"}</span></button>`;
+  }).join("") : '<p class="empty-sidebar">No nodes yet.<br>Add your first node to begin.</p>');
   const filter = $("#eventNode");
   const previous = filter.value;
-  const options = '<option value="all">All nodes</option>' + state.nodes.map(node => `<option value="${escape(node.id)}">${escape(node.name)}</option>`).join("");
+  const options = '<option value="all">All</option>' + state.nodes.map(node => `<option value="${escape(node.id)}">${escape(node.name)}</option>`).join("");
   if (filter.innerHTML !== options) {
     filter.innerHTML = options;
     filter.value = [...filter.options].some(option => option.value === previous) ? previous : "all";
   }
+}
+
+function staleTips() {
+  const active = new Set(), children = new Set(state.blocks.map(block => block.parent));
+  for (const node of state.nodes) for (const [hash, record] of Object.entries(node.blocks || {})) if (record.active) active.add(hash);
+  return state.blocks.filter(block => !active.has(block.hash) && !children.has(block.hash));
+}
+
+function negotiated(link) {
+  const values = Object.values(link.negotiation || {});
+  return values.length > 1 && values.every(value => isPresent(value.advertised) || isPresent(value.received));
+}
+
+function renderSummary() {
+  const running = state.nodes.filter(node => node.running);
+  const best = running.reduce((top, node) => !top || Number(node.height) > Number(top.height) ? node : top, null);
+  const stale = staleTips();
+  const highest = stale.reduce((top, block) => Math.max(top, block.height), -1);
+  const messages = state.events.length;
+  const links = state.links.filter(link => !externalPeer(link.a) && !externalPeer(link.b));
+  let topology = "", end = null;
+  links.forEach((link, index) => {
+    const linkButton = `<button class="topology-link ${link.connected ? "" : "down"} ${selected.type === "link" && selected.id === link.id ? "selected" : ""}" data-link="${escape(link.id)}" aria-label="Inspect ${escape(nameOf(link.a))} to ${escape(nameOf(link.b))}">${link.connected ? "⇄" : "⇹"}</button>`;
+    if (end && (link.a === end || link.b === end)) {
+      end = link.a === end ? link.b : link.a;
+      topology += `${linkButton}<span class="topology-node">${escape(nameOf(end))}</span>`;
+    } else {
+      topology += `${index ? '<span class="topology-node">·</span>' : ""}<span class="topology-node">${escape(nameOf(link.a))}</span>${linkButton}<span class="topology-node">${escape(nameOf(link.b))}</span>`;
+      end = link.b;
+    }
+  });
+  const agreed = links.filter(negotiated).length;
+  const note = links.length ? `BIP332 negotiated on ${agreed === links.length ? links.length === 1 ? "the link" : links.length === 2 ? "both links" : `all ${links.length} links` : `${agreed} of ${links.length} links`}` : "No connections between lab nodes";
+  const external = state.external_peers.length ? ` · ${state.external_peers.length} external peer${state.external_peers.length === 1 ? "" : "s"}` : "";
+  setHTML($("#summary"), `<span>Tip <b>${best ? Number(best.height ?? 0) : "—"}</b>${best ? ` · <span class="mono">${escape(short(best.best_hash, 8))}</span>` : ""}</span><span class="${stale.length ? "amber" : ""}" title="${stale.length ? `Highest at height ${highest}` : ""}"><b>${stale.length}</b> stale tip${stale.length === 1 ? "" : "s"}</span><span><b>${messages}</b> ${messages === 1 ? "message" : "messages"}</span>${state.nodes.length ? `<span class="topology">${topology || `<span class="topology-node">${escape(state.nodes[0].name)}</span>`}<span>&nbsp;· ${escape(note + external)}</span></span>` : ""}`);
 }
 
 function networkPositions() {
@@ -169,31 +241,32 @@ function renderNetwork() {
     const external = externalPeer(link.a) || externalPeer(link.b);
     const received = Object.values(link.negotiation || {}).some(value => isPresent(value.received));
     const observed = isPresent(link.negotiation?.[link.a]?.advertised) && isPresent(link.negotiation?.[link.b]?.advertised);
-    return `<g data-link="${escape(link.id)}" role="button" tabindex="0" aria-label="Inspect ${escape(nameOf(link.a))} to ${escape(nameOf(link.b))}"><path class="link-line ${external ? "external-link" : ""} ${link.connected ? "" : "disconnected"} ${selected.type === "link" && selected.id === link.id ? "selected" : ""}" d="M${a.x},${a.y} L${b.x},${b.y}"/><path class="link-hit" d="M${a.x},${a.y} L${b.x},${b.y}"/>${external ? "" : `<text class="link-label" text-anchor="middle" x="${(a.x + b.x) / 2}" y="${(a.y + b.y) / 2 - 15}">${link.connected ? observed ? "BIP332 ↔" : received ? "BIP332 OBSERVED" : "CONNECTED" : "DISCONNECTED"}</text>`}</g>`;
+    return `<g data-link="${escape(link.id)}" role="button" tabindex="0" aria-label="Inspect ${escape(nameOf(link.a))} to ${escape(nameOf(link.b))}"><path class="link-line ${external ? "external-link" : ""} ${link.connected ? "" : "disconnected"} ${selected.type === "link" && selected.id === link.id ? "selected" : ""}" d="M${a.x},${a.y} L${b.x},${b.y}"/><path class="link-hit" d="M${a.x},${a.y} L${b.x},${b.y}"/>${external ? "" : `<text class="link-label" text-anchor="middle" x="${(a.x + b.x) / 2}" y="${(a.y + b.y) / 2 - 15}">${link.connected ? observed ? "BIP332 ↔" : received ? "BIP332 observed" : "Connected" : "Disconnected"}</text>`}</g>`;
   }).join("");
   const externalNodes = state.external_peers.map(peer => {
     const {x, y} = positions[peer.id];
     const link = state.links.find(item => item.a === peer.id || item.b === peer.id);
     const negotiation = link?.negotiation?.[peer.node] || {};
-    return `<g class="node-visual external-peer ${selected.type === "peer" && selected.id === peer.id ? "selected" : ""}" data-peer="${escape(peer.id)}" role="button" tabindex="0" aria-label="Inspect external peer ${escape(peer.address)}"><rect class="node-box" x="${x - 62}" y="${y - 29}" width="124" height="58" rx="10"/><text class="node-label" x="${x - 52}" y="${y - 9}">${escape(short(peer.address, 17))}</text><text class="node-subtitle" x="${x - 52}" y="${y + 6}">${isPresent(negotiation.received) ? "BIP332 advertised" : "External peer"}</text><text class="node-subtitle" x="${x - 52}" y="${y + 20}">${peer.inbound ? "Inbound" : "Outbound"} · ${escape(nameOf(peer.node))}</text></g>`;
+    return `<g class="node-visual external-peer ${selected.type === "peer" && selected.id === peer.id ? "selected" : ""}" data-peer="${escape(peer.id)}" role="button" tabindex="0" aria-label="Inspect external peer ${escape(peer.address)}"><rect class="node-box" x="${x - 62}" y="${y - 29}" width="124" height="58" rx="8"/><text class="node-label" x="${x - 52}" y="${y - 9}">${escape(short(peer.address, 17))}</text><text class="node-subtitle" x="${x - 52}" y="${y + 6}">${isPresent(negotiation.received) ? "BIP332 advertised" : "External peer"}</text><text class="node-subtitle" x="${x - 52}" y="${y + 20}">${peer.inbound ? "Inbound" : "Outbound"} · ${escape(nameOf(peer.node))}</text></g>`;
   }).join("");
   const nodes = state.nodes.map(node => {
     const {x, y} = positions[node.id];
-    return `<g class="node-visual ${selectedNode === node.id ? "selected" : ""} ${node.running ? "" : "stopped"}" data-node="${escape(node.id)}" role="button" tabindex="0" aria-label="Inspect node ${escape(node.name)}"><rect class="node-box" x="${x - 62}" y="${y - 42}" width="124" height="84" rx="10"/><circle cx="${x - 45}" cy="${y - 21}" r="3" fill="${node.running ? "#4a9169" : "#b8c0b2"}"/><text class="node-label" x="${x - 35}" y="${y - 17}">${escape(String(node.name).slice(0, 13))}</text><text class="node-subtitle" x="${x - 45}" y="${y + 2}">${escape(modeLabel(node.mode))}${node.mining?.enabled ? " · mining" : ""}</text><text class="node-height" x="${x - 45}" y="${y + 23}">${node.running ? `#${Number(node.height ?? 0)} · ${escape(short(node.best_hash, 6))}` : "STOPPED"}</text></g>`;
+    return `<g class="node-visual ${selectedNode === node.id ? "selected" : ""} ${node.running ? "" : "stopped"}" data-node="${escape(node.id)}" role="button" tabindex="0" aria-label="Inspect node ${escape(node.name)}"><rect class="node-box" x="${x - 62}" y="${y - 42}" width="124" height="84" rx="8"/><circle cx="${x - 45}" cy="${y - 21}" r="3" fill="${node.running ? "#1a7f37" : "#8b919a"}"/><text class="node-label" x="${x - 35}" y="${y - 17}">${escape(String(node.name).slice(0, 13))}</text><text class="node-subtitle" x="${x - 45}" y="${y + 2}">${escape(modeLabel(node.mode))}${node.mining?.enabled ? " · mining" : ""}</text><text class="node-height" x="${x - 45}" y="${y + 23}">${node.running ? `#${Number(node.height ?? 0)} · ${escape(short(node.best_hash, 6))}` : "Stopped"}</text></g>`;
   }).join("");
   const packets = window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "" : newPackets.map((event, i) => {
     const a = positions[event.source], b = positions[event.target];
     if (!a || !b) return "";
     return `<circle class="packet" r="4"><animateMotion path="M${a.x},${a.y} L${b.x},${b.y}" dur="1.4s" begin="${i * .12}s" repeatCount="1"/><set attributeName="visibility" to="hidden" begin="${1.4 + i * .12}s"/></circle>`;
   }).join("");
-  $("#networkCanvas").classList.toggle("monitoring", monitoring());
-  $("#networkCanvas").innerHTML = `<svg viewBox="0 0 ${width} ${height}" role="group" aria-label="Live network topology">${edges}${nodes}${externalNodes}${packets}</svg>`;
+  setHTML($("#networkCanvas"), `<svg viewBox="0 0 ${width} ${height}" role="group" aria-label="Live network topology">${edges}${nodes}${externalNodes}${packets}</svg>`);
   newPackets = [];
 }
 
 const metric = (label, value) => `<div class="metric-row"><span>${escape(label)}</span><span>${value}</span></div>`;
-const pill = (text, type = "") => `<span class="status-pill ${type}">${escape(text)}</span>`;
-const inspectorHead = (eyebrow, title, subtitle = "") => `<div class="inspector-header"><div class="eyebrow">${escape(eyebrow)}</div><h2>${escape(title)}</h2>${subtitle ? `<p>${escape(subtitle)}</p>` : ""}</div>`;
+const pill = (text, type = "") => `<span class="badge ${type}">${type === "amber" || type === "green" ? "<i></i>" : ""}${escape(text)}</span>`;
+const detailHead = (title, {meta = "", end = "", closable = false} = {}) => `<div class="panel-header"><h2>${escape(title)}</h2>${meta ? `<span class="panel-meta mono">${escape(meta)}</span>` : ""}<div class="header-end">${end}${closable ? `<span class="esc-hint">Esc</span><button class="icon-button quiet" data-action="clear-selection" aria-label="Clear selection">${CLOSE}</button>` : ""}</div></div>`;
+const sectionHead = (title, action = "") => `<div class="section-head"><h3>${escape(title)}</h3>${action}</div>`;
+const copyButton = value => `<button class="link-button" data-action="copy-hash" data-id="${escape(value)}">${COPY}Copy</button>`;
 
 function receivedPreference(negotiation, peer) {
   if (isPresent(negotiation.received)) return prefLabel(negotiation.received);
@@ -204,58 +277,142 @@ function receivedPreference(negotiation, peer) {
 function externalDetails(peer) {
   const link = state.links.find(item => item.a === peer.id || item.b === peer.id);
   const negotiation = link?.negotiation?.[peer.node] || {};
-  return `${metric("Observed at", escape(nameOf(peer.node)))}${metric("Connection", peer.inbound ? "Inbound" : "Outbound")}${metric("Protocol", escape(peer.version || "Not reported"))}${metric("Software", escape(peer.subver || "Not reported"))}${metric("BIP332 received", escape(receivedPreference(negotiation, peer)))}<p class="help-text">This is an external peer. Its complete block tree and onward connections are not visible from this node.</p><button class="button full" data-action="peers" data-id="${escape(peer.node)}">Connection settings for ${escape(nameOf(peer.node))}</button>`;
+  return `${metric("Observed at", escape(nameOf(peer.node)))}${metric("Connection", peer.inbound ? "Inbound" : "Outbound")}${metric("Protocol", escape(peer.version || "Not reported"))}${metric("Software", escape(peer.subver || "Not reported"))}${metric("BIP332 received", escape(receivedPreference(negotiation, peer)))}<p class="help-text">This is an external peer. Its complete block tree and onward connections are not visible from this node.</p><div class="detail-actions"><button class="button full" data-action="peers" data-id="${escape(peer.node)}">Connection settings for ${escape(nameOf(peer.node))}</button></div>`;
+}
+
+function blockStatus(node, hash) {
+  const known = node.blocks?.[hash];
+  if (!known) return "unknown";
+  if (known.validity === "invalid") return "invalid";
+  if (known.active) return "active";
+  if (known.was_active) return "reorged";
+  return known.have_data ? "data" : "headers";
+}
+
+// Reconstruct how each node learned a block from the captured messages and
+// lab events that mention it. Times are absolute seconds.
+function provenance(hash) {
+  const nodes = {}, links = [];
+  const events = [...state.events].sort((a, b) => a.time - b.time);
+  const entry = id => nodes[id] ||= {time: null, how: null, fetched: null, reorg: null, bytes: 0, local: false};
+  const learn = (id, time, how, local = false) => {
+    if (!isManaged(id)) return;
+    const item = entry(id);
+    if (item.time === null) Object.assign(item, {time, how, local});
+  };
+  // The lab logs a fork after submitting it, so the relay it triggers can be
+  // captured first. Origins come from the lab events regardless of order.
+  const mentions = events.filter(event => hashesOf(event).includes(hash));
+  for (const event of mentions) {
+    const origin = event.kind === "fork" ? event.details?.recipients || [] : event.kind === "mining" ? [event.node] : [];
+    for (const id of origin) {
+      const sent = mentions.find(item => item.direction === "sent" && item.node === id);
+      learn(id, Math.min(event.time, sent?.time ?? event.time), event.kind === "fork" ? "Published by lab" : "Mined here", true);
+    }
+  }
+  for (const event of mentions) {
+    if (event.kind === "reorg" && isManaged(event.node)) entry(event.node).reorg ??= event.time;
+    else if (event.kind === "reorg" && isManaged(event.node)) entry(event.node).reorg ??= event.time;
+    else if (event.direction === "recv" && RELAYED.includes(event.kind) && isManaged(event.node)) {
+      const from = nameOf(event.source);
+      learn(event.node, event.time, event.kind === "staletip" ? `staletip from ${from}` : `${event.kind} from ${from}`);
+      const item = entry(event.node);
+      if (item.local) continue;
+      item.bytes += Number(event.size) || 0;
+      if (["block", "cmpctblock"].includes(event.kind) && item.fetched === null) {
+        item.fetched = event.time;
+        if (!item.how?.startsWith("block")) item.how += ` · block from ${from}`;
+      }
+      if (isManaged(event.source)) {
+        const sent = events.filter(item => item.direction === "sent" && item.node === event.source && item.peer === event.node && item.kind === event.kind && item.time <= event.time && hashesOf(item).includes(hash)).at(-1);
+        links.push({from: event.source, to: event.node, start: sent?.time ?? event.time, end: event.time, kind: event.kind});
+      }
+    }
+  }
+  const times = Object.values(nodes).flatMap(item => [item.time, item.fetched, item.reorg]).filter(time => time !== null);
+  return {nodes, links, first: times.length ? Math.min(...times) : null, last: times.length ? Math.max(...times) : null};
+}
+
+function knowledgeText(node, status, item, first) {
+  const parts = [];
+  if (item?.how) parts.push(item.how);
+  else if (status === "active") parts.push("On the active chain");
+  else if (status !== "unknown") parts.push("Learned before the timeline began");
+  if (status === "headers" && node.mode === "headers") parts.push("Headers mode, not fetched");
+  if (status === "reorged") parts.push(item?.reorg && item.time !== null ? `Active for ${duration((item.reorg - item.time) * 1000)}, then reorged` : "Left the active chain");
+  if (status === "unknown" && !node.running) parts.push("Node stopped");
+  const time = item?.time !== null && item?.time !== undefined && first !== null ? `+${duration((item.time - first) * 1000)}` : "";
+  return {text: parts.join(" · "), time};
+}
+
+function blockInspector() {
+  const hash = selected.id;
+  const block = state.blocks.find(item => item.hash === hash);
+  const statuses = state.nodes.map(node => blockStatus(node, hash));
+  const known = statuses.filter(status => status !== "unknown");
+  const word = !known.length ? ["Not known", ""] : statuses.includes("active") ? known.every(status => status === "active") ? ["Active", "green"] : ["Mixed", ""] : known.every(status => status === "reorged") ? ["Reorged out", ""] : ["Stale", "amber"];
+  const size = Math.max(0, ...state.nodes.map(node => Number(node.blocks?.[hash]?.size) || 0));
+  const parent = state.blocks.find(item => item.hash === block?.parent);
+  const prime = blockLayout().positions.get(hash)?.lane > 0 ? "′" : "";
+  const p = provenance(hash);
+  const rows = state.nodes.map((node, index) => {
+    const status = statuses[index];
+    const {text, time} = knowledgeText(node, status, p.nodes[node.id], p.first);
+    const label = status === "unknown" && outsideWindow(node, block) ? "Outside displayed window" : STATUS_LABEL[status];
+    return `<div class="knowledge-row" data-link-node="${escape(node.id)}"><span class="node-name">${escape(node.name)}</span><i class="swatch ${status}"></i><div class="knowledge-text"><strong>${escape(label)}</strong>${text ? `<span>${escape(text)}</span>` : ""}</div><span class="knowledge-time">${escape(time)}</span></div>`;
+  }).join("");
+  const canFork = supports("forks") && state.nodes.some(node => node.blocks?.[hash]?.have_data && node.running);
+  return detailHead(block ? `Block ${block.height}${prime}` : "Selected block", {meta: short(hash, 8), closable: true}) +
+    `<div class="detail-body">${metric("Status", pill(word[0], word[1]))}${block ? metric("Height", `<span class="mono">${block.height}${parent ? ` · child of ${parent.height}` : ""}</span>`) : ""}${size ? metric("Size", `<span class="mono">${bytes(size)}</span>`) : ""}${sectionHead("Known by")}<div class="knowledge">${rows}</div>${sectionHead("Hash", copyButton(hash))}<div class="hash-box">${escape(hash)}</div>${supports("forks") ? `<div class="detail-actions"><button class="button full" data-action="fork" data-parent="${escape(hash)}" ${canFork ? "" : "disabled"}>Fork from this block</button></div>` : ""}</div>`;
 }
 
 function renderInspector() {
   let html = "";
   if (selected.type === "peer") {
     const peer = externalPeer(selected.id);
-    if (peer) html = inspectorHead("EXTERNAL PEER", peer.address, "Observed from a managed node") + `<div class="inspector-body">${externalDetails(peer)}</div>`;
-    else html = inspectorHead("EXTERNAL PEER", "Connection ended", "This peer is no longer connected") + '<div class="inspector-body"><p class="help-text">Previously observed messages remain in the timeline.</p></div>';
+    if (peer) html = detailHead(peer.address, {closable: true}) + `<div class="detail-body"><p>External peer observed from a managed node.</p>${externalDetails(peer)}</div>`;
+    else html = detailHead("Connection ended", {closable: true}) + '<div class="detail-body"><p>This peer is no longer connected. Previously observed messages remain in the timeline.</p></div>';
   } else if (selected.type === "link") {
     const link = state.links.find(item => item.id === selected.id);
     if (link) {
-      html = inspectorHead("CONNECTION", `${nameOf(link.a)} ↔ ${nameOf(link.b)}`, link.connected ? "Inspect the observed handshake" : "This link is disconnected") + '<div class="inspector-body">';
+      html = detailHead(`${nameOf(link.a)} ⇄ ${nameOf(link.b)}`, {end: pill(link.connected ? "Connected" : "Disconnected", link.connected ? "green" : ""), closable: true}) + '<div class="detail-body">';
       for (const id of [link.a, link.b]) {
         const peer = state.nodes.find(node => node.id === id);
         if (!peer) continue;
         const negotiation = link.negotiation?.[id] || {};
         const remote = externalPeer(id === link.a ? link.b : link.a);
-        html += `<div class="handshake-node"><h3>${escape(nameOf(id))}</h3>${metric("Configured mode", pill(modeLabel(peer.mode), "neutral"))}<div class="handshake-steps"><span class="${negotiation.version ? "seen" : ""}">version</span><span class="${isPresent(negotiation.advertised) || isPresent(negotiation.received) ? "seen" : ""}">BIP332</span><span class="${negotiation.verack ? "seen" : ""}">verack</span></div>${metric("Local preference observed", escape(prefLabel(negotiation.advertised)))}${metric("Peer preference received", escape(receivedPreference(negotiation, remote)))}</div>`;
+        html += `<div class="handshake-node"><h3>${escape(nameOf(id))}</h3><div class="handshake-steps"><span class="${negotiation.version ? "seen" : ""}">version</span><span class="${isPresent(negotiation.advertised) || isPresent(negotiation.received) ? "seen" : ""}">BIP332</span><span class="${negotiation.verack ? "seen" : ""}">verack</span></div>${metric("Configured mode", escape(modeLabel(peer.mode)))}${metric("Local preference observed", escape(prefLabel(negotiation.advertised)))}${metric("Peer preference received", escape(receivedPreference(negotiation, remote)))}</div>`;
       }
       const remote = externalPeer(link.a) || externalPeer(link.b);
-      html += `<p class="help-text">${monitoring() ? "Core logs report received feature preferences. Outgoing feature payloads are not decoded, so a configured mode is not proof of an observed advertisement." : "These are captured messages on this connection. Configuration and advertised preference are shown separately."}</p>${remote ? externalDetails(remote) : `<div class="inspector-actions"><button class="button full" data-connection="${escape(link.id)}">${link.connected ? "Disconnect" : "Reconnect"}</button></div>`}</div>`;
+      html += `<p class="help-text">${monitoring() ? "Core logs report received feature preferences. Outgoing feature payloads are not decoded, so a configured mode is not proof of an observed advertisement." : "These are captured messages on this connection. Configuration and advertised preference are shown separately."}</p>${remote ? externalDetails(remote) : `<div class="detail-actions"><button class="button full ${link.connected ? "danger" : ""}" data-connection="${escape(link.id)}">${link.connected ? "Disconnect" : "Reconnect"}</button></div>`}</div>`;
     }
   } else if (selected.type === "block") {
-    const block = state.blocks.find(item => item.hash === selected.id);
-    html = inspectorHead("BLOCK KNOWLEDGE", block ? `Block ${block.height}` : "Selected block", "Availability and validation are separate") + `<div class="inspector-body"><div class="hash-box">${escape(selected.id)}</div>`;
-    for (const node of state.nodes) {
-      const known = node.blocks?.[selected.id];
-      const cached = node.staletips?.some(tip => tip.hash === selected.id);
-      html += `<div class="knowledge-row"><strong>${escape(node.name)}</strong><div class="knowledge-tags">${!known ? pill(outsideWindow(node, block) ? "Outside displayed window" : "Unknown", "neutral") : `${pill(known.active ? "Active" : "Stale", known.active ? "" : "amber")}${pill(known.have_data ? "Block data" : "Header only", known.have_data ? "" : "amber")}${cached ? pill("In relay cache", "amber") : ""}`}</div>${known ? `<p>Validation: ${escape(known.validity || "not reported")}${!node.running ? " · last state before stop" : ""}</p>` : ""}</div>`;
-    }
-    html += `${supports("forks") ? `<button class="button full" data-action="fork" data-parent="${escape(selected.id)}" ${!state.nodes.some(node => node.blocks?.[selected.id]?.have_data && node.running) ? "disabled" : ""}>Fork from this block</button>` : ""}</div>`;
+    html = blockInspector();
   } else if (selected.type === "event") {
     const event = [...(pausedEvents || []), ...state.events].find(item => String(item.id) === String(selected.id));
     if (event) {
       const route = event.source && event.target ? `${nameOf(event.source)} → ${nameOf(event.target)}` : `${nameOf(event.node)} · ${event.direction || "lab"}`;
       const logged = event.evidence === "debug-log";
-      html = inspectorHead(logged ? "LOG OBSERVATION" : "CAPTURED EVENT", event.kind, route) + `<div class="inspector-body">${metric("Observation", escape(observationOf(event)))}${metric("Evidence", logged ? "Bitcoin Core network log" : event.direction === "local" ? "Lab activity" : "P2P message capture")}${metric("Time", escape(timeOf(event, true)))}${metric(logged ? "Message size reported" : "Payload", event.size == null ? "Not reported" : `${Number(event.size)} bytes`)}${event.details?.tip ? `<button class="button full" data-block="${escape(event.details.tip)}">Inspect announced tip</button>` : ""}${event.details?.observation === "feature-support" ? '<p class="help-text">Core parsed this preference from a received feature message. This observation does not represent an additional transmission.</p>' : ""}<pre>${escape(JSON.stringify(event.details || {message: event.summary}, null, 2))}</pre><p class="help-text">${logged ? "This event comes from Core’s network log. The message payload is not captured. Receipt alone does not establish acceptance or onward relay." : "One transmission can produce a sent capture and a received capture. Receive timestamps show when Core processes the message; receipt alone does not establish validation or relay."}</p></div>`;
+      const block = hashesOf(event).find(hash => state.blocks.some(item => item.hash === hash));
+      html = detailHead(event.kind, {meta: route, closable: true}) + `<div class="detail-body">${metric("Observation", escape(observationOf(event)))}${metric("Evidence", logged ? "Bitcoin Core network log" : event.direction === "local" ? "Lab activity" : "P2P message capture")}${metric("Time", `<span class="mono">${escape(timeOf(event, true))}</span>`)}${metric(logged ? "Size reported" : "Payload", event.size == null ? "Not reported" : `<span class="mono">${bytes(Number(event.size))}</span>`)}${event.details?.observation === "feature-support" ? '<p class="help-text">Core parsed this preference from a received feature message. This observation does not represent an additional transmission.</p>' : ""}${sectionHead("Payload")}<pre>${escape(JSON.stringify(event.details || {message: event.summary}, null, 2))}</pre><p class="help-text">${logged ? "This event comes from Core’s network log. The message payload is not captured. Receipt alone does not establish acceptance or onward relay." : "One transmission can produce a sent capture and a received capture. Receive timestamps show when Core processes the message; receipt alone does not establish validation or relay."}</p>${block ? `<div class="detail-actions"><button class="button full" data-block="${escape(block)}">Inspect block ${escape(short(block, 8))}</button></div>` : ""}</div>`;
     }
   }
   if (!html) {
     const node = state.nodes.find(item => item.id === selectedNode) || state.nodes[0];
     if (!node) return;
     const peers = node.peers?.length || 0;
-    const sync = monitoring() ? `<div class="sync-status">${metric("Chain state", node.running ? node.ibd ? pill("Initial synchronization", "amber") : pill("Synchronized") : pill("Stopped", "neutral"))}<progress max="1" value="${Math.min(1, Math.max(0, Number(node.verification_progress) || 0))}" aria-label="Chain verification progress"></progress>${metric("Verification progress", percent(node.verification_progress))}${metric("Headers known", escape(node.headers ?? "—"))}${metric("Block storage", `${storageSize(node.size_on_disk)}${node.pruned ? " · pruned" : ""}`)}</div>` : "";
-    html = inspectorHead("NODE INSPECTOR", node.name, node.running ? `Running on ${networkName()}` : "Stopped · data retained") + `<div class="inspector-body">${metric("Stale-tip mode", pill(modeLabel(node.mode)))}${metric("Downloaded blocks", escape(node.height ?? "—"))}${sync}${metric("Peers / stale tips", `${peers} / ${node.staletips?.length || 0}`)}${supports("mining") ? metric("Miner", node.mining?.enabled ? `<span class="running-miner">Every ${Number(node.mining.interval)}s</span>` : "Paused") : ""}<div class="hash-box" title="Active tip">${escape(node.best_hash || "Waiting for chain state…")}</div>${node.error ? `<p class="form-error">${escape(node.error)}</p>` : ""}${monitoring() && node.ibd ? '<p class="help-text">Stale-tip announcements are paused during initial synchronization.</p>' : ""}<div class="inspector-actions">${supports("mining") ? `<button class="button primary" data-mine="${escape(node.id)}" ${node.running ? "" : "disabled"}>Mine 1 block</button><button class="button" data-action="miner" data-id="${escape(node.id)}">Miner settings</button>` : ""}<button class="button" data-action="mode" data-id="${escape(node.id)}">Change mode</button><button class="button" data-lifecycle="${escape(node.id)}">${node.running ? "Stop node" : "Start node"}</button>${supports("public_peers") ? `<button class="button full" data-action="peers" data-id="${escape(node.id)}">Connection settings</button>` : ""}</div><p class="help-text">Changing mode restarts the node and reconnects its peers. Select a connection to see negotiation.</p></div>`;
+    const sync = monitoring() ? `<div class="sync-status">${metric("Chain state", node.running ? node.ibd ? pill("Initial synchronization", "amber") : pill("Synchronized", "green") : pill("Stopped"))}<progress max="1" value="${Math.min(1, Math.max(0, Number(node.verification_progress) || 0))}" aria-label="Chain verification progress"></progress>${metric("Verification progress", `<span class="mono">${percent(node.verification_progress)}</span>`)}${metric("Headers known", `<span class="mono">${escape(node.headers ?? "—")}</span>`)}${metric("Block storage", `${storageSize(node.size_on_disk)}${node.pruned ? " · pruned" : ""}`)}</div>` : "";
+    const status = node.running ? pill(monitoring() ? `Running on ${networkName()}` : "Running", "green") : pill("Stopped · data retained");
+    const stale = node.staletips?.length || 0;
+    html = detailHead(`Node ${node.name}`, {end: status}) + `<div class="detail-body">${metric("Stale-tip mode", `<button class="inline-select" data-action="mode" data-id="${escape(node.id)}" aria-label="Change stale-tip mode">${escape(modeLabel(node.mode))}${CHEVRON}</button>`)}${metric("Height", `<span class="mono">${escape(node.height ?? "—")}</span>`)}${sync}${metric("Peers", `<span class="mono">${peers}</span>`)}${metric("Stale tips known", `<span class="mono" ${stale ? 'style="color:var(--amber-text)"' : ""}>${stale}</span>`)}${supports("mining") ? metric("Miner", node.mining?.enabled ? `<span class="running-miner">Every ${Number(node.mining.interval)}s</span>` : "Paused") : ""}${metric("P2P / RPC ports", `<span class="mono">${escape(node.p2p_port ?? "—")} / ${escape(node.rpc_port ?? "—")}</span>`)}${sectionHead("Tip hash", node.best_hash ? copyButton(node.best_hash) : "")}<div class="hash-box">${escape(node.best_hash || "Waiting for chain state…")}</div>${node.error ? `<p class="form-error">${escape(node.error)}</p>` : ""}${monitoring() && node.ibd ? '<p class="help-text">Stale-tip announcements are paused during initial synchronization.</p>' : ""}<div class="detail-actions">${supports("mining") ? `<button class="button" data-action="miner" data-id="${escape(node.id)}">Miner settings</button>` : ""}${supports("public_peers") ? `<button class="button" data-action="peers" data-id="${escape(node.id)}">Connection settings</button>` : ""}<button class="button ${node.running ? "danger" : ""}" data-lifecycle="${escape(node.id)}">${node.running ? "Stop node" : "Start node"}</button></div><p class="help-text">Changing mode restarts the node and reconnects its peers.</p></div>`;
   }
-  $("#inspector").innerHTML = html;
+  setHTML($("#inspector"), html);
 }
 
 function blockLayout() {
-  const blocks = [...state.blocks].filter(block => Number.isFinite(block.height)).sort((a, b) => a.height - b.height || a.hash.localeCompare(b.hash));
+  const active = new Set(state.nodes.flatMap(node => Object.entries(node.blocks || {}).filter(([, record]) => record.active).map(([hash]) => hash)));
+  // The active chain keeps the straight lane so forks branch away from it.
+  const blocks = [...state.blocks].filter(block => Number.isFinite(block.height)).sort((a, b) => a.height - b.height || active.has(b.hash) - active.has(a.hash) || a.hash.localeCompare(b.hash));
   const positions = new Map(), childCounts = new Map();
   let nextLane = 0;
   for (const block of blocks) {
@@ -273,38 +430,132 @@ function blockLayout() {
 
 function renderChains() {
   const {blocks, positions, lanes} = blockLayout();
-  if (!blocks.length) { $("#chainCanvas").innerHTML = `<p class="empty-message">${monitoring() ? "Waiting for chain state from your nodes. Synchronization may take time." : "Waiting for block headers. Mine a block to begin."}</p>`; return; }
+  if (!blocks.length) { setHTML($("#chainCanvas"), `<p class="empty-message">${monitoring() ? "Waiting for chain state from your nodes. Synchronization may take time." : "Waiting for block headers. Mine a block to begin."}</p>`); return; }
   const heights = [...new Set(blocks.map(block => block.height))];
   const columns = new Map(heights.map((height, index) => [height, index]));
-  const step = monitoring() ? Math.max(54, 66 * zoom) : 58 * zoom;
-  const halfBlock = monitoring() ? 24 : 18;
-  const rowHeight = Math.max(88, lanes * 36 + 40);
-  const width = Math.max(650, 155 + heights.length * step);
-  const height = state.nodes.length * rowHeight;
-  let html = "";
+  const half = 20, label = $("#chainCanvas").clientWidth < 500 ? 76 : 112, ruler = 28, lane = 36, trailing = 210;
+  const available = $("#chainCanvas").clientWidth - 40 - label - 24 - trailing;
+  const fitted = heights.length > 1 ? available / (heights.length - 1) : 88;
+  const step = Math.min(monitoring() ? 70 : 88, Math.max(56, fitted)) * zoom;
+  const rowHeight = Math.max(72, lanes * lane + 24);
+  const width = label + 24 + (heights.length - 1) * step + trailing;
+  const height = ruler + state.nodes.length * rowHeight;
+  const focus = state.blocks.find(block => block.hash === (selected.type === "block" ? selected.id : blockFilter));
+  const x = block => label + 24 + columns.get(block.height) * step;
+  const y = (top, block) => top + 28 + positions.get(block.hash).lane * lane;
+  let html = `<defs><pattern id="stripes" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><rect width="6" height="6" fill="#fff8e6"/><line x1="0" y1="0" x2="0" y2="6" stroke="#e7b556" stroke-width="3"/></pattern></defs>`;
+  let labels = `<span class="chain-ruler-label">Height</span>`;
+  for (const value of heights) {
+    const rx = label + 24 + columns.get(value) * step;
+    html += `<text class="chain-ruler ${focus?.height === value ? "marked" : ""}" text-anchor="middle" x="${rx}" y="18">${value}</text>${focus?.height === value ? `<line class="chain-ruler-mark" x1="${rx - 12}" x2="${rx + 12}" y1="27" y2="27"/>` : ""}`;
+  }
   state.nodes.forEach((node, index) => {
-    const top = index * rowHeight;
-    html += `<line class="chain-divider" x1="0" y1="${top}" x2="${width}" y2="${top}"/><text class="chain-node-label" x="20" y="${top + 35}">${escape(String(node.name).slice(0, 14))}</text><text class="chain-node-sub" x="20" y="${top + 51}">${node.running ? `${escape(modeLabel(node.mode))} · #${Number(node.height ?? 0)}` : "Stopped · saved view"}</text>`;
-    for (const block of blocks) {
-      const point = positions.get(block.hash);
-      const x = 145 + columns.get(block.height) * step, y = top + 33 + point.lane * 36;
-      const known = node.blocks?.[block.hash];
+    const top = ruler + index * rowHeight;
+    const known = blocks.filter(block => node.blocks?.[block.hash]);
+    const parents = new Set(known.map(block => block.parent));
+    html += `<line class="chain-divider" x1="${label}" y1="${top}" x2="${width}" y2="${top}"/>`;
+    labels += `<div class="chain-label" style="top:${top}px"><strong>${escape(String(node.name).slice(0, 14))}</strong><span>${node.running ? `${escape(modeLabel(node.mode))} mode` : "Stopped · saved view"}</span></div>`;
+    for (const block of known) {
       const parent = blocks.find(item => item.hash === block.parent);
-      if (parent) {
-        const px = 145 + columns.get(parent.height) * step, py = top + 33 + positions.get(parent.hash).lane * 36;
-        html += `<path class="chain-edge ${known ? "" : "unknown"}" d="M${px + halfBlock},${py} C${px + step / 2},${py} ${x - step / 2},${y} ${x - halfBlock},${y}"/>`;
+      if (!parent || !node.blocks?.[parent.hash]) continue;
+      const px = x(parent), py = y(top, parent), cx = x(block), cy = y(top, block);
+      html += `<path class="chain-edge ${blockStatus(node, block.hash)}" d="M${px + half},${py} C${px + step / 2},${py} ${cx - step / 2},${cy} ${cx - half},${cy}"/>`;
+    }
+    for (const block of known) {
+      const status = blockStatus(node, block.hash);
+      const bx = x(block), by = y(top, block);
+      const prime = positions.get(block.hash).lane > 0 ? "′" : "";
+      html += `<g class="block ${status} ${focus?.hash === block.hash ? "selected" : ""}" data-block="${escape(block.hash)}" data-owner="${escape(node.id)}" role="button" tabindex="0" aria-label="${escape(node.name)} block ${block.height}: ${STATUS_LABEL[status]}"><title>${escape(block.hash)} · ${STATUS_LABEL[status]}</title><rect class="ring" x="${bx - half - 4}" y="${by - 16}" width="${half * 2 + 8}" height="32" rx="7"/><rect class="body" x="${bx - half}" y="${by - 12}" width="${half * 2}" height="24" rx="4"/><text x="${bx}" y="${by}">${block.height}${prime}</text></g>`;
+      if (!parents.has(block.hash)) {
+        const text = status === "active" ? `tip ${short(block.hash, 8)}` : `stale ${short(block.hash, 8)} · ${STATUS_LABEL[status].toLowerCase().replace("full ", "")}`;
+        html += `<text class="tip-label ${status}" x="${bx + half + 12}" y="${by + 4}">${escape(text)}</text>`;
       }
     }
-    for (const block of blocks) {
-      const x = 145 + columns.get(block.height) * step, y = top + 33 + positions.get(block.hash).lane * 36;
-      const known = node.blocks?.[block.hash];
-      const status = !known ? "unknown" : known.validity === "invalid" ? "invalid" : known.active ? "active" : known.have_data ? "data" : "headers";
-      const statusLabel = !known && outsideWindow(node, block) ? "outside displayed window" : status;
-      html += `<g class="block ${status} ${selectedHash === block.hash ? "selected" : ""}" data-block="${escape(block.hash)}" data-owner="${escape(node.id)}" role="button" tabindex="0" aria-label="${escape(node.name)} block ${block.height}: ${statusLabel}"><title>${escape(block.hash)} · ${statusLabel}${known?.validity ? ` · ${escape(known.validity)}` : ""}</title><rect x="${x - halfBlock}" y="${y - 12}" width="${halfBlock * 2}" height="24" rx="5"/><text x="${x}" y="${y}">${block.height}</text></g>`;
-    }
   });
-  $("#chainCanvas").innerHTML = `<svg width="${width}" height="${height}" role="group" aria-label="Aligned block trees for every node">${html}</svg>`;
+  // Node names stay in a sticky column so a narrow panel can scroll the trees
+  // sideways without losing which row belongs to which node.
+  const canvas = $("#chainCanvas");
+  const pinned = canvas._auto === undefined || Math.abs(canvas.scrollLeft - canvas._auto) < 4;
+  setHTML(canvas, `<div class="chain-labels" style="width:${label}px;height:${height + 8}px">${labels}</div><svg width="${width - label}" height="${height + 8}" viewBox="${label} 0 ${width - label} ${height + 8}" role="group" aria-label="Aligned block trees for every node">${html}</svg>`);
+  if (focus && canvas._focus !== focus.hash) {
+    const visible = canvas.clientWidth - label - 40;
+    const offset = x(focus) - label;
+    if (offset < canvas.scrollLeft + 40 || offset > canvas.scrollLeft + visible - 160) canvas.scrollLeft = offset - 80;
+  } else if (pinned) {
+    const latest = label + 24 + (heights.length - 1) * step;
+    canvas.scrollLeft = Math.max(0, latest + half + 120 - canvas.clientWidth + 20);
+  }
+  canvas._auto = canvas.scrollLeft;
+  canvas._focus = focus?.hash;
   $("#zoomLabel").textContent = `${Math.round(zoom * 100)}%`;
+}
+
+function niceStep(span) {
+  const raw = span / 4, power = 10 ** Math.floor(Math.log10(raw || 1));
+  return [1, 2, 5, 10].map(factor => factor * power).find(value => value >= raw) || power * 10;
+}
+
+function renderTrace() {
+  const panel = $("#tracePanel");
+  const hash = blockFilter;
+  const p = hash ? provenance(hash) : null;
+  if (!p || p.first === null) { panel.hidden = true; setHTML(panel, ""); return; }
+  panel.hidden = false;
+  const width = Math.max(180, panel.querySelector(".trace-canvas")?.clientWidth || panel.clientWidth - 40 - 84 - 96 - 2);
+  const spanMs = Math.max((p.last - p.first) * 1000, 1) * 1.15;
+  const tick = niceStep(spanMs);
+  const x = time => 10 + ((time - p.first) * 1000) / spanMs * (width - 20);
+  const rowY = index => 48 + index * 48;
+  const index = new Map(state.nodes.map((node, i) => [node.id, i]));
+  const height = 24 + state.nodes.length * 48;
+  const end = x(p.first + spanMs / 1000);
+  let svg = "";
+  for (let ms = 0; ms <= spanMs; ms += tick) {
+    const tx = x(p.first + ms / 1000);
+    svg += `<path class="trace-grid" d="M${tx} 24V${height}"/><text class="trace-tick" x="${tx}" y="15">${ms === 0 ? "0 ms" : duration(ms).replace(" ms", "")}</text>`;
+  }
+  const statuses = state.nodes.map(node => blockStatus(node, hash));
+  state.nodes.forEach((node, i) => {
+    const item = p.nodes[node.id], status = statuses[i], y = rowY(i);
+    let row = "";
+    if (!item || item.time === null) {
+      row = `<text class="trace-missing" x="10" y="${y + 4}">${status === "unknown" ? "Not received" : "Learned before the timeline began"}</text>`;
+    } else {
+      const start = x(item.time);
+      const bar = (from, to, fill) => to > from ? `<rect x="${from}" y="${y - 4}" width="${to - from}" height="8" rx="2" fill="${fill}"/>` : "";
+      if (status === "reorged" && item.reorg) row += bar(start, x(item.reorg), "#16181d") + bar(x(item.reorg), end, "#dde0e4");
+      else if (status === "data" && item.fetched && item.fetched > item.time) row += bar(start, x(item.fetched), "#f3d9a0") + bar(x(item.fetched), end, "#d9920b");
+      else row += bar(start, end, {active: "#16181d", data: "#d9920b", headers: "#f3d9a0", reorged: "#dde0e4", invalid: "#cf222e"}[status] || "#dde0e4");
+      const note = `${item.how} · +${duration((item.time - p.first) * 1000)}`;
+      row += `<text class="trace-note" x="${start + (p.links.some(link => link.to === node.id) && !item.local ? 8 : 0)}" y="${y - 10}">${escape(note)}</text>`;
+      if (item.reorg) row += `<text class="trace-note" text-anchor="end" x="${x(item.reorg)}" y="${y + 20}">reorged · +${escape(duration((item.reorg - p.first) * 1000))}</text>`;
+    }
+    svg += `<g class="trace-row" data-link-node="${escape(node.id)}">${row}</g>`;
+  });
+  for (const link of p.links) {
+    // Only draw the deliveries that taught a node something; echoes back to a
+    // node that already had the block would loop across the chart.
+    const target = p.nodes[link.to];
+    if (!index.has(link.from) || !index.has(link.to) || ![target?.time, target?.fetched].includes(link.end)) continue;
+    const down = index.get(link.to) > index.get(link.from);
+    const y1 = rowY(index.get(link.from)) + (down ? 4 : -4), y2 = rowY(index.get(link.to)) + (down ? -4 : 4);
+    const x1 = Math.max(10, x(link.start)), x2 = x(link.end), mid = (y1 + y2) / 2;
+    svg += `<path d="M${x1} ${y1}C${x1} ${mid} ${x2} ${mid} ${x2} ${y2}" fill="none" stroke="${link.kind === "staletip" ? "#d9920b" : "#aeb3ba"}" stroke-width="1.5"/>`;
+  }
+  const reached = statuses.filter(status => status !== "unknown").length;
+  const labels = state.nodes.map(node => `<div class="trace-cell" data-link-node="${escape(node.id)}"><strong>${escape(node.name)}</strong><span>${escape(modeLabel(node.mode))}</span></div>`).join("");
+  const sizes = state.nodes.map((node, i) => {
+    const item = p.nodes[node.id];
+    const kind = !item ? "—" : item.local ? "local" : statuses[i] === "headers" ? "header" : item.fetched ? "block" : "relay";
+    return `<div class="trace-cell" data-link-node="${escape(node.id)}"><span class="mono">${item ? bytes(item.bytes) : "—"}</span><span>${kind}</span></div>`;
+  }).join("");
+  const blockSize = Math.max(0, ...state.nodes.map(node => Number(node.blocks?.[hash]?.size) || 0), ...state.events.filter(event => event.direction === "recv" && ["block", "cmpctblock"].includes(event.kind) && hashesOf(event).includes(hash)).map(event => Number(event.size) || 0));
+  const headerOnly = state.nodes.filter((node, i) => statuses[i] === "headers");
+  const actual = headerOnly.reduce((sum, node) => sum + (p.nodes[node.id]?.bytes || 0), 0);
+  const full = actual + blockSize * headerOnly.length;
+  const names = headerOnly.map(node => node.name).join(", ");
+  const cost = headerOnly.length && blockSize && full ? `<div class="mode-cost"><p>Headers mode saved ${escape(names)} <b>${bytes(full - actual)}</b> (${Math.round((full - actual) / full * 100)}%)</p><div class="mode-cost-bars" role="img" aria-label="${escape(`${bytes(actual)} received, ${bytes(full)} if ${names} fetched the block`)}"><div class="cost-row"><span>As received</span><div class="cost-track"><div class="cost-bar light" style="width:${(actual / full * 100).toFixed(1)}%"></div></div><span>${bytes(actual)}</span></div><div class="cost-row"><span>If ${escape(names)} fetched it</span><div class="cost-track"><div class="cost-bar" style="width:100%"></div></div><span>${bytes(full)}</span></div></div></div>` : "";
+  setHTML(panel, `<div class="panel-header"><h2>Propagation</h2><span class="panel-meta mono">${escape(short(hash, 8))}</span><div class="panel-stats"><span>Reached <b>${reached} of ${state.nodes.length}</b> nodes</span><span>Last change <b class="mono">+${escape(duration((p.last - p.first) * 1000))}</b></span></div></div><div class="trace-body"><div class="trace-labels"><div class="trace-cell head"></div>${labels}</div><div class="trace-canvas"><svg height="${height}" viewBox="0 0 ${width} ${height}" role="img" aria-label="Arrival of the block at each node over time">${svg}</svg></div><div class="trace-bytes"><div class="trace-cell head"><span>Received</span></div>${sizes}</div></div>${cost}`);
 }
 
 function timeOf(event, full = false) {
@@ -315,9 +566,11 @@ function timeOf(event, full = false) {
 
 function eventDescription(event) {
   const d = event.details || {};
-  if (event.kind === "staletip") return event.evidence === "debug-log" && !d.tip ? event.summary || "staletip observed · payload not captured" : `${d.header_count ?? d.headers?.length ?? "?"} headers · have_block=${d.have_block} · tip ${short(d.tip)}`;
+  if (event.kind === "staletip") return event.evidence === "debug-log" && !d.tip ? event.summary || "staletip observed · payload not captured" : `${d.header_count ?? d.headers?.length ?? "?"} header${(d.header_count ?? 0) === 1 ? "" : "s"} · have_block=${d.have_block} · tip ${short(d.tip, 8)}`;
   if (event.kind === "feature") return event.evidence === "debug-log" && !isPresent(d.prefers_blocks) ? d.log || event.summary || "Feature message observed" : `${d.feature || "feature"} · ${prefLabel(d.prefers_blocks)}`;
   if (event.kind === "version") return event.evidence === "debug-log" && d.version == null ? d.log || event.summary || "Version message observed" : `Protocol ${d.version ?? "—"}`;
+  if (event.kind === "reorg") return `Left ${d.depth ?? d.hashes?.length ?? "?"} block${(d.depth ?? 0) === 1 ? "" : "s"} for the chain at ${short(d.new_tip, 8)}`;
+  if (!["sent", "recv"].includes(event.direction)) return event.summary || "";
   if (d.hash) return short(d.hash, 19);
   if (d.hashes?.length) return `${d.hashes.length} ${d.hashes.length === 1 ? "hash" : "hashes"} · ${short(d.hashes[0], 14)}`;
   return event.summary || (event.size ? `${event.size} bytes` : "");
@@ -325,33 +578,63 @@ function eventDescription(event) {
 
 function observationOf(event) {
   if (event.evidence === "debug-log" && event.details?.observation === "feature-support") return `Peer preference at ${nameOf(event.node)}`;
-  if (event.direction === "sent") return `Sent at ${nameOf(event.node)}`;
-  if (event.direction === "recv") return `Received at ${nameOf(event.node)}`;
-  return event.node ? `Lab event at ${nameOf(event.node)}` : "Lab event";
+  if (event.direction === "sent") return `sent at ${nameOf(event.node)}`;
+  if (event.direction === "recv") return `recv at ${nameOf(event.node)}`;
+  return event.node ? `lab · ${nameOf(event.node)}` : "lab";
 }
 
 function renderEvents() {
   const source = pausedEvents || state.events;
   const search = $("#eventSearch").value.toLowerCase().trim();
-  const kind = $("#eventKind").value, node = $("#eventNode").value;
-  const filtered = source.filter(event => {
-    if (node !== "all" && ![event.node, event.source, event.target, event.peer].includes(node)) return false;
-    if (kind === "relay" && !["staletip", "getdata", "block", "notfound"].includes(event.kind)) return false;
-    if (kind === "handshake" && !["version", "verack", "feature"].includes(event.kind)) return false;
-    if (kind === "action" && !["action", "lab", "error", "mined", "mining", "fork", "node", "connection", "scenario"].includes(event.kind)) return false;
-    if (!["all", "relay", "handshake", "action"].includes(kind) && event.kind !== kind) return false;
-    return !search || `${JSON.stringify(event)} ${nameOf(event.source)} ${nameOf(event.target)} ${nameOf(event.node)}`.toLowerCase().includes(search);
-  });
-  $("#eventCount").textContent = source.length;
+  const node = $("#eventNode").value;
+  const typeSelect = $("#eventType");
+  const scoped = source.filter(event => (node === "all" || [event.node, event.source, event.target, event.peer].includes(node)) && (!blockFilter || hashesOf(event).includes(blockFilter)));
+  const kind = typeSelect.value || "all";
+  const test = TYPES.find(([key]) => key === kind)?.[2] || TYPES[0][2];
+  const filtered = scoped.filter(event => test(event) && (!search || `${JSON.stringify(event)} ${nameOf(event.source)} ${nameOf(event.target)} ${nameOf(event.node)}`.toLowerCase().includes(search)));
+  const options = TYPES.map(([key, label, match]) => `<option value="${key}">${label} (${scoped.filter(match).length})</option>`).join("");
+  if (typeSelect._options !== options) { typeSelect.innerHTML = options; typeSelect._options = options; typeSelect.value = kind; }
+  setHTML($("#blockFilter"), blockFilter ? `<button class="filter-token" data-action="clear-block" aria-label="Stop filtering by block ${escape(short(blockFilter, 8))}">Block <span class="mono">${escape(short(blockFilter, 8))}</span>${CLOSE}</button>` : "");
+  $("#eventCount").textContent = filtered.length === source.length ? source.length : `${filtered.length} of ${source.length}`;
   const pending = pausedEvents ? state.events.filter(event => !pausedEvents.some(old => old.id === event.id)).length : 0;
-  $("#pauseButton").textContent = pausedEvents ? `Resume${pending ? ` · ${pending} new` : ""}` : "Pause timeline";
-  $("#timelineCaption").textContent = pausedEvents ? `Timeline paused for inspection. Nodes${supports("mining") ? " and miners" : ""} continue running.` : monitoring() ? "Observed in Core network logs. Payloads are not captured; arrival does not imply acceptance." : "Captured at application processing time. Arrival does not imply acceptance.";
+  setHTML($("#pauseButton"), pausedEvents ? `${icon('<path d="M5 3.5L12 8L5 12.5Z"/>')}Resume${pending ? ` · ${pending} new` : ""}` : `${icon('<path d="M5.5 3.5V12.5M10.5 3.5V12.5"/>')}Pause`);
+  $("#timelineCaption").textContent = pausedEvents ? `Paused for inspection; nodes${supports("mining") ? " and miners" : ""} keep running` : monitoring() ? "From Core network logs; payloads are not captured" : "Captured at processing time; arrival is not acceptance";
   const rows = filtered.slice(-150).reverse();
-  $("#eventList").innerHTML = rows.length ? rows.map(event => {
-    const route = event.source && event.target ? `${escape(nameOf(event.source))}<b>→</b>${escape(nameOf(event.target))}` : `${escape(nameOf(event.node))}<b>·</b>${escape(event.direction || "lab")}`;
-    return `<button class="event-row ${selected.type === "event" && String(selected.id) === String(event.id) ? "selected" : ""}" data-event="${escape(event.id)}"><span class="event-time">${escape(timeOf(event))}</span><span class="event-route"><span>${route}</span><small class="event-observation">${escape(observationOf(event))}</small></span><span class="message-badge ${kindClass(event.kind)}">${escape(event.kind)}</span><span class="event-description">${escape(eventDescription(event))}</span></button>`;
-  }).join("") : `<p class="empty-message">No matching messages yet.<br>${monitoring() ? "Connect to peers to observe network activity. BIP332 requires support from the peer." : "Connect nodes or create a fork to watch the exchange."}</p>`;
-  $("#timelineLimit").textContent = filtered.length > 150 ? `Showing the latest 150 of ${filtered.length} matching events. Narrow the filters or export the session for all retained events.` : `${filtered.length} matching events · newest first · select a row for ${monitoring() ? "observed details" : "its payload"}`;
+  setHTML($("#eventList"), rows.length ? rows.map(event => {
+    const route = event.source && event.target ? `${escape(nameOf(event.source))}${ARROW}${escape(nameOf(event.target))}` : escape(nameOf(event.node));
+    const prose = !["sent", "recv"].includes(event.direction);
+    return `<button class="event-row ${selected.type === "event" && String(selected.id) === String(event.id) ? "selected" : ""}" data-event="${escape(event.id)}"><span class="event-time">${escape(timeOf(event))}</span><span class="event-route">${route}<span class="event-observation">${escape(prose ? event.kind === "reorg" ? "chain" : "lab" : observationOf(event))}</span></span><span class="tag ${kindClass(event.kind)}">${escape(event.kind)}</span><span class="event-description ${prose ? "prose" : ""}">${escape(eventDescription(event))}</span><span class="event-size">${event.size == null || prose ? "–" : bytes(Number(event.size))}</span></button>`;
+  }).join("") : `<p class="empty-message">No matching messages yet.<br>${blockFilter ? "Nothing captured mentions this block." : monitoring() ? "Connect to peers to observe network activity. BIP332 requires support from the peer." : "Connect nodes or create a fork to watch the exchange."}</p>`);
+  const limit = $("#timelineLimit");
+  limit.hidden = filtered.length <= 150;
+  limit.textContent = `Showing the latest 150 of ${filtered.length} matching messages. Narrow the filters or export the session for all retained events.`;
+}
+
+// Hovering a message highlights the node and block it concerns in the
+// block trees, block panel and trace.
+function applyLinks() {
+  document.querySelectorAll(".linked").forEach(element => element.classList.remove("linked"));
+  const event = hoveredEvent && [...(pausedEvents || []), ...state.events].find(item => String(item.id) === hoveredEvent);
+  if (!event?.node) return;
+  document.querySelectorAll(`[data-link-node="${CSS.escape(event.node)}"]`).forEach(element => element.classList.add("linked"));
+  for (const hash of hashesOf(event)) document.querySelectorAll(`.block[data-owner="${CSS.escape(event.node)}"][data-block="${CSS.escape(hash)}"]`).forEach(element => element.classList.add("linked"));
+}
+
+function selectBlock(hash) {
+  selectedHash = hash; blockFilter = hash; selected = {type: "block", id: hash};
+  render();
+}
+
+function clearSelection() {
+  if (selected.type === "node" || selected.type === "block") blockFilter = null;
+  selected = {type: "node", id: selectedNode};
+  render();
+}
+
+function clearBlock() {
+  blockFilter = null;
+  if (selected.type === "block") selected = {type: "node", id: selectedNode};
+  render();
 }
 
 function openDialog(title, body, submitText, handler) {
@@ -407,7 +690,7 @@ function minerDialog(id) {
 function connectionsDialog() {
   const running = state.nodes.filter(node => node.running);
   const links = state.links.filter(link => link.connected && !externalPeer(link.a) && !externalPeer(link.b));
-  openDialog(monitoring() ? "Managed node connections" : "Connections", `${monitoring() ? "<p>To choose public network peers, select a node and open its Connection settings.</p>" : ""}${links.length ? `<div class="connection-list">${links.map(link => `<div class="connection-item"><span>${escape(nameOf(link.a))} ↔ ${escape(nameOf(link.b))}</span><button type="button" class="button compact" data-connection="${escape(link.id)}">Disconnect</button></div>`).join("")}</div><br>` : ""}${running.length < 2 ? '<p>Start at least two nodes to create a connection between them.</p>' : `<p>Connections are bidirectional. An arrow in the timeline shows the direction of a specific message.</p><div class="field-row"><label class="field">From<select name="a">${nodeOptions(running)}</select></label><label class="field">To<select name="b">${nodeOptions(running, running.find(node => node.id !== selectedNode)?.id)}</select></label></div>`}`, "Connect nodes", running.length < 2 ? null : values => {
+  openDialog(monitoring() ? "Managed node connections" : "Connections", `${monitoring() ? "<p>To choose public network peers, select a node and open its Connection settings.</p>" : ""}${links.length ? `<div class="connection-list">${links.map(link => `<div class="connection-item"><span>${escape(nameOf(link.a))} ⇄ ${escape(nameOf(link.b))}</span><button type="button" class="button" data-connection="${escape(link.id)}">Disconnect</button></div>`).join("")}</div><br>` : ""}${running.length < 2 ? '<p>Start at least two nodes to create a connection between them.</p>' : `<p>Connections are bidirectional. An arrow in the timeline shows the direction of a specific message.</p><div class="field-row"><label class="field">From<select name="a">${nodeOptions(running)}</select></label><label class="field">To<select name="b">${nodeOptions(running, running.find(node => node.id !== selectedNode)?.id)}</select></label></div>`}`, "Connect nodes", running.length < 2 ? null : values => {
     if (values.get("a") === values.get("b")) throw new Error("Choose two different nodes.");
     return action("connect", {a: values.get("a"), b: values.get("b")});
   });
@@ -478,12 +761,12 @@ document.addEventListener("click", event => {
   } else if (control.dataset.link !== undefined) {
     selected = {type: "link", id: control.dataset.link}; render();
   } else if (control.dataset.block !== undefined) {
-    selectedHash = control.dataset.block; selected = {type: "block", id: selectedHash}; render();
+    selectBlock(control.dataset.block);
   } else if (control.dataset.event !== undefined) {
     selected = {type: "event", id: control.dataset.event};
     const entry = [...state.events, ...(pausedEvents || [])].find(item => String(item.id) === String(selected.id));
-    selectedHash = entry?.details?.tip || entry?.details?.hash || entry?.details?.hashes?.[0] || selectedHash;
-    renderInspector(); renderChains(); renderEvents();
+    selectedHash = hashesOf(entry || {})[0] || selectedHash;
+    renderInspector(); renderChains(); renderEvents(); applyLinks();
   } else if (control.dataset.mine !== undefined && supports("mining")) safeAction("mine", {id: control.dataset.mine, count: 1});
   else if (control.dataset.lifecycle !== undefined) {
     const node = state.nodes.find(item => item.id === control.dataset.lifecycle);
@@ -502,7 +785,11 @@ document.addEventListener("click", event => {
       case "mode": modeDialog(control.dataset.id || selectedNode); break;
       case "peers": peersDialog(control.dataset.id || selectedNode); break;
       case "miner": minerDialog(control.dataset.id || selectedNode); break;
+      case "mine-selected": if (supports("mining") && selectedNode) safeAction("mine", {id: selectedNode, count: 1}); break;
       case "fork": forkDialog(control.dataset.parent); break;
+      case "copy-hash": navigator.clipboard?.writeText(control.dataset.id).then(() => toast("Block hash copied."), () => toast("Copy is unavailable in this browser.", true)); break;
+      case "clear-block": clearBlock(); break;
+      case "clear-selection": clearSelection(); break;
       case "session-info": sessionDialog(); break;
       case "close-dialog": $("#modal").close(); break;
       case "stop-all": openDialog("Stop all nodes?", `<p>${monitoring() ? "All managed nodes shut down. Their downloaded chains and connection settings are retained." : "Mining stops and all node processes shut down. Their blocks and captures are retained."} You can start the nodes again individually.</p>`, "Stop all nodes", () => action("stop_all")); break;
@@ -518,8 +805,24 @@ document.addEventListener("click", event => {
 document.addEventListener("keydown", event => {
   if ((event.key === "Enter" || event.key === " ") && event.target.matches('svg [role="button"]')) {
     event.preventDefault(); event.target.dispatchEvent(new MouseEvent("click", {bubbles: true}));
+    return;
   }
+  if ($("#modal").open || event.metaKey || event.ctrlKey || event.altKey || event.target.closest("input, textarea, select, [contenteditable]")) return;
+  if (event.key === "Escape" && (blockFilter || selected.type !== "node")) clearSelection();
+  else if (event.key.toLowerCase() === "f" && supports("forks") && !$("#forkButton").disabled) { event.preventDefault(); forkDialog(); }
 });
+$("#eventList").addEventListener("focusin", event => {
+  const id = event.target.closest(".event-row")?.dataset.event || null;
+  if (id !== hoveredEvent) { hoveredEvent = id; applyLinks(); }
+});
+$("#eventList").addEventListener("focusout", event => {
+  if (!event.relatedTarget?.closest?.("#eventList")) { hoveredEvent = null; applyLinks(); }
+});
+$("#eventList").addEventListener("mouseover", event => {
+  const id = event.target.closest(".event-row")?.dataset.event || null;
+  if (id !== hoveredEvent) { hoveredEvent = id; applyLinks(); }
+});
+$("#eventList").addEventListener("mouseleave", () => { hoveredEvent = null; applyLinks(); });
 $("#modalForm").addEventListener("submit", async event => {
   event.preventDefault();
   if (!formHandler) return;
@@ -536,8 +839,10 @@ $("#modalForm").addEventListener("submit", async event => {
 });
 $("#modal").addEventListener("close", () => { dialogAbort?.abort(); });
 $("#eventSearch").addEventListener("input", renderEvents);
-$("#eventKind").addEventListener("change", renderEvents);
 $("#eventNode").addEventListener("change", renderEvents);
+$("#eventType").addEventListener("change", renderEvents);
+let resizeFrame;
+window.addEventListener("resize", () => { cancelAnimationFrame(resizeFrame); resizeFrame = requestAnimationFrame(() => { if (state.nodes.length) { renderChains(); renderTrace(); applyLinks(); } }); });
 
 async function initialState() {
   try {

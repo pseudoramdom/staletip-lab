@@ -47,6 +47,7 @@ class Node:
         self.capture = CaptureReader()
         self.log_reader = NetworkLogReader()
         self.records = {}
+        self.was_active = set()
         self.status = "stopped"
         self.error = None
         self._http = urllib.request.build_opener(urllib.request.ProxyHandler({}))
@@ -812,7 +813,7 @@ class Lab:
                         record["have_data"] = True
                     if not record["have_data"]:
                         try:
-                            node.rpc("getblock", block, 1)
+                            record["size"] = node.rpc("getblock", block, 1).get("size")
                             record["have_data"] = True
                         except RPCError as error:
                             if error.code not in (-1, -5):
@@ -823,8 +824,11 @@ class Lab:
                 if tip["status"] in ("active", "valid-fork"):
                     validated.add(block)
                 block = cached["parent"]
+        # A block that left the active chain while still known was reorganized away.
+        node.was_active = {block for block in node.was_active | active if block in records}
         for block, record in records.items():
             record["active"] = block in active
+            record["was_active"] = block in node.was_active
             record["validity"] = "invalid" if tip_status.get(block) == "invalid" else (
                 "validated" if block in validated else "headers-valid")
         node.records = records
@@ -959,6 +963,19 @@ class Lab:
                          rpc_port=node.rpc_port, datadir=str(node.datadir),
                          public_network=node.public_network, configured_peers=list(node.configured_peers))
             states.append(state)
+        for state in states:
+            before = previous.get(state["id"], {}).get("blocks", {})
+            after = state.get("blocks", {})
+            if not state.get("running"):
+                continue
+            disconnected = sorted((block for block, record in before.items() if record.get("active")
+                                   and block in after and not after[block].get("active")),
+                                  key=lambda block: after[block]["height"])
+            if disconnected:
+                self._event("reorg", "%s reorganized away from %d block%s" % (
+                    state["name"], len(disconnected), "" if len(disconnected) == 1 else "s"),
+                    node=state["id"], details={"hashes": disconnected, "new_tip": state.get("best_hash"),
+                                               "depth": len(disconnected)})
         live = self._map_peers(states)
         self._capture_events()
         links = {}

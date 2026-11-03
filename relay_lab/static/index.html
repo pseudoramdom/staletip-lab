@@ -3,59 +3,89 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="theme-color" content="#f5f5f0">
-  <title>Staletip · Relay laboratory</title>
+  <meta name="theme-color" content="#ffffff">
+  <title>Staletip · Relay lab</title>
   <link rel="stylesheet" href="/style.css">
   <script src="/app.js" defer></script>
 </head>
 <body>
   <header class="app-header">
-    <a class="brand" href="/" aria-label="Staletip home"><svg viewBox="0 0 32 32" aria-hidden="true"><path d="M7 26V6m0 10h9a8 8 0 0 0 8-8"/><circle cx="7" cy="6" r="3"/><circle cx="7" cy="26" r="3"/><circle cx="24" cy="7" r="3"/></svg><strong>staletip</strong><span class="brand-divider"></span><span>Relay laboratory</span></a>
-    <div class="header-right"><span class="network-badge" id="networkBadge">REGTEST</span><span id="connectionStatus" class="connection-state"><i></i>Connecting</span><a class="button quiet compact" href="/api/export" download>Export session <span aria-hidden="true">↗</span></a></div>
+    <nav class="crumbs" aria-label="Location">
+      <a class="brand" href="/" aria-label="Staletip home"><span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 16 16"><path d="M3 12.5H7.5C9 12.5 9.8 11.7 10.6 10.2L12.2 7"/><path d="M3 12.5H13"/><circle cx="12.4" cy="4.6" r="1.5"/></svg></span><strong>staletip</strong></a>
+      <svg class="icon crumb-sep" viewBox="0 0 16 16" aria-hidden="true"><path d="M6 3.5L10.5 8L6 12.5"/></svg>
+      <span id="networkCrumb">Regtest lab</span>
+      <svg class="icon crumb-sep" viewBox="0 0 16 16" aria-hidden="true"><path d="M6 3.5L10.5 8L6 12.5"/></svg>
+      <span id="sessionCrumb" class="crumb-muted">Session</span>
+    </nav>
+    <div class="header-right">
+      <span id="connectionStatus" class="live-pill"><i></i>Connecting</span>
+      <a class="button" href="/api/export" download><svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2.5V10M4.75 6.75L8 10L11.25 6.75M3 13.5H13"/></svg>Export</a>
+    </div>
   </header>
   <div id="jobBar" class="job-bar" role="status" aria-live="polite" hidden></div>
   <div class="workspace">
     <aside class="sidebar" aria-label="Node controls">
-      <div class="sidebar-heading"><h2>Nodes <span id="nodeCount" class="count">0</span></h2><button class="icon-button" data-action="add-node" aria-label="Add node">+</button></div>
+      <div class="sidebar-heading"><h2>Nodes</h2><button class="icon-button quiet" data-action="add-node" aria-label="Add a node" title="Add a node"><svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 3V13M3 8H13"/></svg></button></div>
       <div id="nodeList" class="node-list"></div>
-      <div class="sidebar-actions"><button class="button full" data-action="add-node"><span aria-hidden="true">+</span> Add node</button><button class="button quiet full" data-action="connections">Manage connections</button></div>
-      <div class="sidebar-note"><span class="eyebrow">REAL NODES · REAL MESSAGES</span><p>Each node runs its own Bitcoin Core process. The views below come from RPC and captured P2P messages.</p><button class="text-button" data-action="session-info">Session details <span aria-hidden="true">↗</span></button></div>
-      <button id="stopAll" class="button quiet danger full" data-action="stop-all" disabled>Stop all nodes</button>
-      <button class="button quiet danger full" data-action="reset" disabled>Reset lab</button>
-      <button class="button quiet full" data-action="clear-events" hidden>Clear timeline</button>
+      <nav class="sidebar-links" aria-label="Lab">
+        <button class="sidebar-link" data-action="connections"><svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><circle cx="4" cy="8" r="2.25"/><circle cx="12" cy="8" r="2.25"/><path d="M6.25 8H9.75"/></svg><span>Connections</span><span id="linkCount" class="sidebar-count"></span></button>
+        <button class="sidebar-link" data-action="session-info"><svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><rect x="3" y="2.5" width="10" height="11" rx="1.5"/><path d="M5.75 6H10.25M5.75 8.5H10.25M5.75 11H8.5"/></svg><span>Session details</span></button>
+      </nav>
+      <div class="sidebar-footer">
+        <p>Each node is a real <code>bitcoind</code> process. Views come from RPC and captured P2P messages.</p>
+        <div class="sidebar-danger">
+          <button class="text-button danger" data-action="stop-all" disabled>Stop all</button>
+          <button class="text-button danger" data-action="reset" disabled>Reset lab</button>
+          <button class="text-button" data-action="clear-events" hidden>Clear timeline</button>
+        </div>
+      </div>
     </aside>
     <main>
-      <div class="page-heading"><div><div class="eyebrow">NETWORK EXPLORER</div><h1 id="workspaceTitle">Relay workspace</h1><p id="workspaceDescription">Follow a fork, from the first header to the last relay.</p></div><button id="forkButton" class="button primary" data-action="fork" disabled><span aria-hidden="true">⑂</span> Create fork</button></div>
+      <div class="page-heading">
+        <div class="page-title"><h1 id="workspaceTitle">Regtest workspace</h1><div id="summary" class="status-line" aria-label="Lab summary"></div></div>
+        <div class="page-actions"><button id="mineButton" class="button" data-action="mine-selected" disabled>Mine block</button><button id="forkButton" class="button primary" data-action="fork" disabled>Create fork <kbd>F</kbd></button></div>
+      </div>
       <section id="welcome" class="welcome panel">
         <div class="welcome-art" aria-hidden="true"><span>A</span><i></i><span>B</span><i></i><span>C</span></div>
-        <div><div class="eyebrow" id="welcomeEyebrow">YOUR FIRST EXPERIMENT</div><h2 id="welcomeTitle">Three nodes. One shared chain.</h2><p id="welcomeDescription">Start A → B → C with five common blocks. Create a fork on A, then watch its announcement reach B and C.</p><button class="button primary" data-action="bootstrap">Create three-node lab <span aria-hidden="true">→</span></button><button class="button primary" data-action="monitor" hidden>Monitor testnet4 <span aria-hidden="true">→</span></button></div>
+        <div><h2 id="welcomeTitle">Three nodes. One shared chain.</h2><p id="welcomeDescription">Start A → B → C with five common blocks. Create a fork on A, then watch its announcement reach B and C.</p><button class="button primary" data-action="bootstrap">Create three-node lab</button><button class="button primary" data-action="monitor" hidden>Monitor testnet4</button></div>
       </section>
-      <div id="liveWorkspace" hidden>
-        <div class="network-grid">
-          <section class="panel network-panel" aria-label="Network topology">
-            <div class="panel-heading"><div><h2>Network</h2><p>Select a node or connection to inspect it.</p></div><span id="peerCount" class="small-badge">0 connections</span></div>
-            <div id="networkCanvas" class="network-canvas"></div>
-            <div class="panel-footer"><span><i class="legend-dot green"></i> Running</span><span><i class="legend-dot gray"></i> Stopped</span><span class="network-caption">Pulses show captured arrivals</span></div>
-          </section>
-          <section class="panel inspector-panel" aria-label="Selection details"><div id="inspector"></div></section>
-        </div>
-        <section class="panel chains-panel" aria-label="Block trees">
-          <div class="panel-heading"><div><h2>What each node sees</h2><p id="chainDescription">The same block has the same position in every row.</p></div><div class="zoom-controls"><button class="icon-button" data-action="zoom-out" aria-label="Zoom block trees out">−</button><span id="zoomLabel">100%</span><button class="icon-button" data-action="zoom-in" aria-label="Zoom block trees in">+</button></div></div>
-          <div id="chainCanvas" class="chain-canvas"></div>
-          <div class="panel-footer tree-legend"><span><i class="legend-block active"></i> Active chain</span><span><i class="legend-block data"></i> Stale block data</span><span><i class="legend-block headers"></i> Header only</span><span><i class="legend-block unknown"></i> Unknown</span><span class="legend-note">Click a block to compare knowledge</span></div>
+      <div id="liveWorkspace" class="live-workspace" hidden>
+        <section id="networkPanel" class="panel network-panel" aria-label="Network topology" hidden>
+          <div class="panel-header"><h2>Network</h2><span id="peerCount" class="panel-meta">0 connections</span></div>
+          <div id="networkCanvas" class="network-canvas"></div>
         </section>
+        <div class="trees-grid">
+          <section class="panel chains-panel" aria-label="Block trees">
+            <div class="panel-header"><h2>Block trees</h2><span id="chainDescription" class="panel-meta"></span><div class="segmented" role="group" aria-label="Zoom"><button data-action="zoom-out" aria-label="Zoom block trees out"><svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M3.5 8H12.5"/></svg></button><span id="zoomLabel">100%</span><button data-action="zoom-in" aria-label="Zoom block trees in"><svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 3.5V12.5M3.5 8H12.5"/></svg></button></div></div>
+            <div id="chainCanvas" class="chain-canvas"></div>
+            <div class="tree-legend">
+              <span><i class="legend-swatch active"></i>Active</span>
+              <span><i class="legend-swatch data"></i>Staletip, block</span>
+              <span><i class="legend-swatch headers"></i>Staletip, header only</span>
+              <span><i class="legend-swatch reorged"></i>Reorged out</span>
+              <small>Unknown blocks are not drawn</small>
+            </div>
+          </section>
+          <section id="inspector" class="panel inspector-panel" aria-label="Selection details"></section>
+        </div>
+        <section id="tracePanel" class="panel trace-panel" aria-label="Block propagation" hidden></section>
         <section class="panel timeline-panel" aria-label="Message timeline">
-          <div class="panel-heading"><div><h2>Message timeline <span id="eventCount" class="count">0</span></h2><p id="timelineCaption">Captured at application processing time. Arrival does not imply acceptance.</p></div><button id="pauseButton" class="button compact" data-action="pause">Pause timeline</button></div>
-          <div class="timeline-tools"><label class="search-field"><span aria-hidden="true">⌕</span><input id="eventSearch" type="search" placeholder="Search messages, blocks, peers…" aria-label="Search captured messages"></label><select id="eventKind" aria-label="Filter message type"><option value="all">All messages</option><option value="relay">Stale relay & downloads</option><option value="handshake">Negotiation</option><option value="staletip">staletip</option><option value="getdata">getdata</option><option value="block">block</option><option value="action">Lab activity</option></select><select id="eventNode" aria-label="Filter node"><option value="all">All nodes</option></select></div>
-          <div class="timeline-labels"><span>TIME</span><span>ROUTE</span><span>MESSAGE</span><span>DETAIL</span></div>
+          <div class="panel-header"><h2>Messages</h2><span id="eventCount" class="panel-meta">0</span><span id="timelineCaption" class="panel-caption">Captured at processing time; arrival is not acceptance</span><button id="pauseButton" class="button small" data-action="pause"></button></div>
+          <div class="timeline-tools">
+            <label class="search-field"><svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.25"/><path d="M10.25 10.25L13 13"/></svg><input id="eventSearch" type="search" placeholder="Search messages" aria-label="Search captured messages"></label>
+            <label class="select-field"><span>Type</span><select id="eventType" aria-label="Message type"></select><svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M4.5 6.5L8 10L11.5 6.5"/></svg></label>
+            <label class="select-field"><span>Node</span><select id="eventNode" aria-label="Node"><option value="all">All</option></select><svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M4.5 6.5L8 10L11.5 6.5"/></svg></label>
+            <span id="blockFilter"></span>
+          </div>
+          <div class="event-head"><span>Time</span><span>Route</span><span>Message</span><span>Detail</span><span>Size</span></div>
           <div id="eventList" class="event-list"></div><div id="timelineLimit" class="timeline-limit"></div>
         </section>
       </div>
-      <div class="mobile-actions"><button class="button compact" data-action="session-info">Session details</button><a class="button compact" href="/api/export" download>Export session</a><button class="button compact danger" data-action="stop-all" disabled>Stop all nodes</button><button class="button compact danger" data-action="reset" disabled>Reset lab</button><button class="button compact" data-action="clear-events" hidden>Clear timeline</button></div>
+      <div class="mobile-actions"><button class="button" data-action="session-info">Session details</button><a class="button" href="/api/export" download>Export session</a><button class="button danger" data-action="stop-all" disabled>Stop all</button><button class="button danger" data-action="reset" disabled>Reset lab</button><button class="button" data-action="clear-events" hidden>Clear timeline</button></div>
       <footer class="workspace-footer"><span id="workspaceFooter">Local experiment · Regtest</span><span>Custom signet adapter planned</span></footer>
     </main>
   </div>
-  <dialog id="modal" aria-labelledby="modalTitle"><form id="modalForm"><div class="dialog-heading"><div><div class="eyebrow" id="modalEyebrow">LAB CONTROL</div><h2 id="modalTitle"></h2></div><button type="button" class="icon-button" data-action="close-dialog" aria-label="Close dialog">×</button></div><div id="modalBody" class="dialog-body"></div><p id="modalError" class="form-error" role="alert" hidden></p><div class="dialog-footer"><button type="button" class="button" data-action="close-dialog">Cancel</button><button type="submit" id="modalSubmit" class="button primary">Apply</button></div></form></dialog>
+  <dialog id="modal" aria-labelledby="modalTitle"><form id="modalForm"><div class="dialog-heading"><h2 id="modalTitle"></h2><button type="button" class="icon-button quiet" data-action="close-dialog" aria-label="Close dialog"><svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M4.5 4.5L11.5 11.5M11.5 4.5L4.5 11.5"/></svg></button></div><div id="modalBody" class="dialog-body"></div><p id="modalError" class="form-error" role="alert" hidden></p><div class="dialog-footer"><button type="button" class="button" data-action="close-dialog">Cancel</button><button type="submit" id="modalSubmit" class="button primary">Apply</button></div></form></dialog>
   <div id="toasts" class="toasts" aria-live="polite"></div>
 </body>
 </html>
