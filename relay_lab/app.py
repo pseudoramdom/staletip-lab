@@ -136,28 +136,44 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(description="Run a regtest relay laboratory or testnet4 monitor.")
+    parser = argparse.ArgumentParser(description="Run a regtest laboratory or monitor testnet4 and signet.")
     parser.add_argument("--bin-dir", type=Path, help="Directory containing the BIP332 bitcoind and bitcoin-cli (default: BITCOIN_BIN_DIR, then PATH)")
-    parser.add_argument("--network", choices=("regtest", "testnet4"), default="regtest", help="Network to run (default: regtest)")
-    parser.add_argument("--port", type=int, help="Loopback web port (default: 8765 for regtest, 8766 for testnet4)")
+    parser.add_argument("--network", choices=("regtest", "testnet4", "signet"), default="regtest", help="Network to run (default: regtest)")
+    parser.add_argument("--port", type=int, help="Loopback web port (default: regtest 8765, testnet4 8766, signet 8767)")
     parser.add_argument("--data-dir", type=Path, default=Path(__file__).resolve().parents[1] / "runs", help="Parent directory for retained session artifacts")
+    parser.add_argument("--observe", type=Path, help="JSON configuration for read-only monitoring of existing nodes")
     args = parser.parse_args(argv)
     if args.port is None:
-        args.port = 8766 if args.network == "testnet4" else 8765
+        args.port = {"regtest": 8765, "testnet4": 8766, "signet": 8767}[args.network]
     if not 1 <= args.port <= 65535:
         parser.error("--port must be between 1 and 65535")
-    try:
-        args.bin_dir = find_bin_dir(args.bin_dir)
-    except ValueError as error:
-        parser.error(str(error))
+    observers = None
+    if args.observe:
+        if args.network == "regtest":
+            parser.error("Observer mode supports testnet4 and signet; choose --network")
+        try:
+            config = json.loads(args.observe.expanduser().read_text())
+            observers = config["nodes"]
+            if not isinstance(observers, list) or not 1 <= len(observers) <= 8:
+                raise ValueError("Observer configuration requires 1–8 nodes")
+        except (OSError, ValueError, KeyError, TypeError) as error:
+            parser.error("Invalid observer configuration: %s" % error)
+        args.bin_dir = None
+    else:
+        if args.network == "signet":
+            parser.error("Signet currently requires --observe; mining and managed nodes are not supported")
+        try:
+            args.bin_dir = find_bin_dir(args.bin_dir)
+        except ValueError as error:
+            parser.error(str(error))
     from .core import Lab
-    from .networks import Regtest, Testnet4
-    network = Testnet4() if args.network == "testnet4" else Regtest()
-    run_id = "testnet4" if network.persistent else datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + "-" + uuid.uuid4().hex[:6]
+    from .networks import Regtest, Testnet4, Signet
+    network = {"regtest": Regtest, "testnet4": Testnet4, "signet": Signet}[args.network]()
+    run_id = (("observe-" if observers is not None else "") + network.name) if network.persistent else datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + "-" + uuid.uuid4().hex[:6]
     run_dir = args.data_dir.expanduser().resolve() / run_id
     run_dir.mkdir(parents=True, exist_ok=network.persistent, mode=0o700)
     try:
-        lab = Lab(args.bin_dir.expanduser().resolve(), run_dir, network=network)
+        lab = Lab(args.bin_dir, run_dir, network=network, observers=observers)
     except (ValueError, OSError) as error:
         parser.error(str(error))
     server = None
@@ -166,10 +182,10 @@ def main(argv=None):
         def stop_on_signal(*_):
             raise KeyboardInterrupt
         signal.signal(signal.SIGTERM, stop_on_signal)
-        print("\nStaletip relay laboratory\n  Network: %s\n  Open: http://127.0.0.1:%d\n  Session: %s\n  Binaries: %s\n\nPress Ctrl+C to stop the server and its nodes.\n" % (network.name, args.port, run_dir, args.bin_dir), flush=True)
+        print("\nStaletip relay laboratory\n  Network: %s\n  Open: http://127.0.0.1:%d\n  Session: %s\n  Binaries: %s\n\nPress Ctrl+C to stop the server. Observer nodes remain running.\n" % (network.name, args.port, run_dir, args.bin_dir), flush=True)
         server.serve_forever(poll_interval=0.25)
     except KeyboardInterrupt:
-        print("\nStopping miners and owned nodes…", flush=True)
+        print("\nStopping observer…" if observers is not None else "\nStopping miners and owned nodes…", flush=True)
     except OSError as error:
         print("Unable to start server: %s" % error, file=sys.stderr)
         return 1

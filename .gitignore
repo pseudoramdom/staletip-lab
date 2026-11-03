@@ -3,3 +3,12 @@ __pycache__/
 /runs/
 .venv/
 .DS_Store
+
+.env
+.env.*
+!.env.example
+/observer-data/
+/observer-config/
+
+.claude/
+.impeccable/

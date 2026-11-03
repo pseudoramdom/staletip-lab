@@ -1,0 +1,63 @@
+services:
+  testnet4:
+    image: staletip-lab:local
+    build: .
+    network_mode: host
+    user: "${TESTNET4_UID:-1000}:${TESTNET4_GID:-1000}"
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    tmpfs: [/tmp]
+    environment:
+      LAB_HTTP_PORT: "8766"
+    command: ["--observe", "/config/nodes.json", "--network", "testnet4", "--port", "8766", "--data-dir", "/data"]
+    volumes:
+      - type: bind
+        source: ./examples/observer-testnet4.json
+        target: /config/nodes.json
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: "${TESTNET4_DATADIR:?Set TESTNET4_DATADIR to the existing testnet4 chain directory}"
+        target: /bitcoin
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: "${TESTNET4_LAB_DATA:?Set TESTNET4_LAB_DATA to a writable observer-data directory}"
+        target: /data
+        bind:
+          create_host_path: false
+  signet:
+    image: staletip-lab:local
+    build: .
+    network_mode: host
+    user: "${SIGNET_UID:-1000}:${SIGNET_GID:-1000}"
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    tmpfs: [/tmp]
+    environment:
+      LAB_HTTP_PORT: "8767"
+    command: ["--observe", "/config/nodes.json", "--network", "signet", "--port", "8767", "--data-dir", "/data"]
+    volumes:
+      - type: bind
+        source: ./examples/observer-signet.json
+        target: /config/nodes.json
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: "${SIGNET_DATADIR:?Set SIGNET_DATADIR to the existing signet chain directory}"
+        target: /bitcoin
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: "${SIGNET_LAB_DATA:?Set SIGNET_LAB_DATA to a writable observer-data directory}"
+        target: /data
+        bind:
+          create_host_path: false

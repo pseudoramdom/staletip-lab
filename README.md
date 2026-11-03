@@ -1,14 +1,15 @@
 # Staletip Lab
 
 A local web interface for experimenting with [BIP332](https://github.com/bitcoin/bips/blob/master/bip-0332.md) on regtest and monitoring
-testnet4 using real Bitcoin Core nodes. Start and stop nodes, choose their
+testnet4 and Signet using real Bitcoin Core nodes. Start and stop nodes, choose their
 stale-tip mode, inspect block trees, and follow negotiation and relay messages.
 Mining and on-demand fork creation are available only on regtest.
 
 ## Start
 
-Requires macOS or Linux, Python 3.9 or newer, and `bitcoind`/`bitcoin-cli` built from the
-`bip332-staletip-relay` branch. There are no Python packages, JavaScript packages,
+Requires macOS or Linux and Python 3.9 or newer. Managed-node experiments also
+require `bitcoind`/`bitcoin-cli` built from the `bip332-staletip-relay` branch.
+Observer mode connects to existing nodes and needs no Bitcoin binaries locally. There are no Python packages, JavaScript packages,
 CDNs, wallets, or frontend build steps to install.
 
 From the repository root, in Bash or fish:
@@ -106,6 +107,102 @@ Mining, automatic miners, starter-chain creation, and publishing forks are
 unavailable on testnet4 in both the interface and the backend API. Use regtest
 for repeatable fork experiments.
 
+## Observe existing nodes
+
+Observer mode attaches to nodes that you already operate, including nodes managed
+by systemd or another container. It never starts, stops, restarts, mines on, or
+changes peers or stale-tip settings on those nodes. Those actions are rejected
+by the backend as well as hidden in the interface. Closing the observer only
+closes the visualizer. The observer never rotates or writes Bitcoin debug logs.
+
+Copy an example JSON configuration and set the RPC endpoint and authentication:
+
+```sh
+./run-lab.py --observe /path/to/testnet4-nodes.json --network testnet4
+./run-lab.py --observe /path/to/signet-nodes.json --network signet --port 8767
+```
+
+Run these in separate terminals. Each observer handles one network and checks
+that the RPC node reports that network. Multiple nodes on the same network can
+be listed in the configuration's `nodes` array. Examples are in
+[`examples/observer-testnet4.json`](examples/observer-testnet4.json) and
+[`examples/observer-signet.json`](examples/observer-signet.json).
+
+Each node requires `name`, `rpc_url`, and either `cookie_file` or both
+`rpc_user_env` and `rpc_password_env`. The latter name environment variables
+containing your RPC username and password; their values are not stored in the
+JSON configuration. Optional `log_file` enables message observations.
+`p2p_address` is an optional endpoint used to match connections between observed
+nodes; set it to the address peers actually report for that node.
+
+RPC supplies chain state, block trees, peer state, and the stale-tip cache.
+Message arrivals and feature negotiation require network debug logging on the
+node and read access to its log. The observer does not turn logging on for you.
+If you omit the log, RPC monitoring still works. Negotiation that happened before
+observation began may remain unobserved; no negotiation state is inferred from
+the configured stale-tip mode. Missing or unreadable logs do not imply missing
+P2P traffic. Existing nodes remain responsible for their own log rotation.
+
+Signet observation uses the node's existing chain and settings. A custom Signet
+needs no signing key or challenge configuration in the observer; the node does
+validation. Put nodes from different custom Signet networks in separate observer
+instances, since the RPC chain name alone does not distinguish their challenges.
+
+## Docker Compose on a VPS
+
+The included Compose file runs two observers: Testnet4 at **127.0.0.1:8766** and
+Signet at **127.0.0.1:8767**. It is intended for Docker Engine on a **Linux VPS**
+with the existing nodes' RPC services reachable on the host's loopback interface.
+Host networking lets the observers reach those RPC ports without exposing them.
+No Bitcoin processes or blockchain data are included in the image.
+
+1. Run `cp examples/observer.env.example .env` and edit its paths and numeric
+   UID/GID values. `TESTNET4_DATADIR` and `SIGNET_DATADIR` must point to the
+   existing **network chain directories** containing `.cookie` and `debug.log`.
+   If your nodes use custom RPC ports or log locations, update the example JSON
+   configurations and mounts accordingly.
+2. Create the two `*_LAB_DATA` directories. Give each directory write access for
+   its configured container UID/GID. These separate directories store only the
+   observer's state and event archive. Do not use a Bitcoin datadir here.
+3. Choose a non-root UID/GID that can read each node's RPC cookie and log, often
+   the UID/GID of its Bitcoin service. The container's read-only mounts prevent
+   writes to those directories. Mount the **directory**, not just the cookie
+   file, so cookie replacement on node restart remains visible.
+4. Build and start the observers:
+
+```sh
+docker compose config
+docker compose up --build -d
+```
+
+The containers use a non-root user, a read-only application filesystem, and
+separate writable observer-data mounts. All capabilities are dropped. Image
+builds use an allowlist in `.dockerignore`, so `runs/`, `.git/`, configuration
+files, and credentials are excluded from the build context. The examples use
+cookie authentication; to use environment-based RPC credentials instead, pass
+the variables named by your JSON configuration into the corresponding Compose
+service (for example with a private `env_file`). Compose's `.env` interpolation
+file does not automatically export arbitrary variables to containers.
+
+Access the interfaces from your own machine through SSH; substitute your VPS
+login below:
+
+```sh
+ssh -N -L 8766:127.0.0.1:8766 -L 8767:127.0.0.1:8767 user@your-vps
+```
+
+Then open **http://127.0.0.1:8766** or **http://127.0.0.1:8767** locally. Keep the
+local and remote forwarded ports identical because the app validates the HTTP
+Host and Origin against its listening port. There is no web login; these
+examples keep the web server on loopback. A public web deployment requires an
+authenticated reverse proxy and corresponding host/origin configuration.
+
+Use `docker compose logs -f` for diagnostics and `docker compose down` to stop
+the observers. Neither command changes or stops your existing Bitcoin nodes.
+A node restart or temporary RPC outage is reflected in the interface, and the
+observer retries without restarting that node. The image's HTTP health check
+checks the visualizer, not the availability of the independently managed nodes.
+
 ## First experiment
 
 1. Create the three-node starter network. A, B, and C start in headers mode,
@@ -180,12 +277,10 @@ relay_lab/static/         Browser interface; no build tooling
 tests/                   Protocol, HTTP boundary, optional real-node tests
 ```
 
-The network adapters implement **regtest experiments** and **testnet4 monitoring**.
-Custom signet can
-provide its challenge arguments, chain directory, and a signing/grinding miner
-through the same interface. It is intentionally not presented as working
-signet support. A signet adapter must also account for initial chain setup and
-signature-dependent stale-tip eligibility.
+The network adapters implement **regtest experiments**, **testnet4 monitoring**,
+and **Signet observation**. Signet is supported by attaching to an existing node,
+including a custom Signet node. Creating Signet networks, signing blocks, and
+mining on Signet are not implemented.
 
 The older `staletip-regtest-demo.sh` remains available as a verbose terminal-only
 three-node smoke test. It additionally requires Bash 3.2 or newer and `jq`:

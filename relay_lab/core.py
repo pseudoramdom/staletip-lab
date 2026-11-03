@@ -170,12 +170,16 @@ class Lab:
     MAX_NODES = 8
     WINDOW = 80
 
-    def __init__(self, bin_dir, run_dir, network=None):
-        self.bin_dir, self.run_dir = Path(bin_dir).expanduser().resolve(), Path(run_dir).resolve()
-        self.binary = self.bin_dir / "bitcoind"
-        if not self.binary.is_file():
+    def __init__(self, bin_dir, run_dir, network=None, observers=None):
+        self.observer = observers is not None
+        self.bin_dir = Path(bin_dir).expanduser().resolve() if bin_dir is not None else None
+        self.run_dir = Path(run_dir).resolve()
+        self.binary = self.bin_dir / "bitcoind" if self.bin_dir is not None else None
+        if not self.observer and (self.binary is None or not self.binary.is_file()):
             raise ValueError("bitcoind not found in %s" % self.bin_dir)
         self.network = network or Regtest()
+        if self.observer and self.network.name not in ("testnet4", "signet"):
+            raise ValueError("Observer mode supports testnet4 and signet")
         self.run_dir.mkdir(parents=True, exist_ok=True)
         self._profile_lock = None
         if self.network.persistent:
@@ -184,7 +188,7 @@ class Lab:
                 fcntl.flock(self._profile_lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
             except OSError as error:
                 self._profile_lock.close()
-                raise ValueError("This testnet4 profile is already open in another lab server") from error
+                raise ValueError("This profile is already open in another lab server") from error
         self._nodes = {}
         self._edges = {}
         self._peer_sessions = {}
@@ -203,7 +207,16 @@ class Lab:
         self._state = {"session": self._session(self.run_dir),
                        "nodes": [], "blocks": [], "links": [], "external_peers": [], "events": [], "jobs": []}
         try:
-            self._load_profile()
+            if self.observer:
+                from .observer import ObserverNode
+                if not isinstance(observers, list) or not 1 <= len(observers) <= self.MAX_NODES:
+                    raise ValueError("Observer configuration requires 1–8 nodes")
+                for index, config in enumerate(observers, 1):
+                    node = ObserverNode("n%d" % index, config, self.network)
+                    self._nodes[node.id] = node
+                self._publish_controls()
+            else:
+                self._load_profile()
         except Exception:
             self._event_file.close()
             if self._profile_lock:
@@ -215,12 +228,12 @@ class Lab:
 
     def _session(self, run_dir):
         return {"network": self.network.name, "run_dir": str(run_dir),
-                "binary": str(self.binary), "started_at": time.time(),
+                "binary": str(self.binary) if self.binary else None, "observer": self.observer, "started_at": time.time(),
                 "window_blocks": self.WINDOW, "max_nodes": self.MAX_NODES,
                 "reset_supported": not self.network.persistent,
                 "observation_id": secrets.token_hex(8),
                 "observation_source": "debug-log" if self.network.public_peers else "capture",
-                "capabilities": self.network.capabilities()}
+                "capabilities": {**self.network.capabilities(), "management": not self.observer}}
 
     def snapshot(self):
         with self._lock:
@@ -329,7 +342,8 @@ class Lab:
         finally:
             for node in reversed(list(self._nodes.values())):
                 try:
-                    node.stop()
+                    if not self.observer:
+                        node.stop()
                 except Exception as error:
                     self._event("error", "Could not stop %s: %s" % (node.name, error))
             self._event_file.close()
@@ -337,6 +351,8 @@ class Lab:
                 self._profile_lock.close()
 
     def _check_action(self, action, params):
+        if self.observer and action != "clear_events":
+            raise ValueError("Observer mode cannot change or control existing nodes")
         if not self.network.mining and (action in ("mine", "miner", "fork", "bootstrap") or "seed_from" in params):
             raise ValueError("Mining, fork creation, and starter chains are available only on regtest")
         if self.network.persistent and action == "reset":
@@ -370,7 +386,7 @@ class Lab:
         return public_network, result
 
     def _save_profile(self):
-        if not self.network.persistent:
+        if self.observer or not self.network.persistent:
             return
         profile = {"version": 1, "network": self.network.name,
                    "nodes": [{"id": node.id, "name": node.name, "mode": node.mode,
@@ -589,7 +605,9 @@ class Lab:
         if action == "clear_events":
             for node in self._nodes.values():
                 if self.network.public_peers:
-                    node.log_reader.reset(node.chain_dir / "debug.log", at_end=True)
+                    log_path = node.log_file if self.observer else node.chain_dir / "debug.log"
+                    if log_path:
+                        node.log_reader.reset(log_path, at_end=True)
                 else:
                     node.capture.read(node.chain_dir / "message_capture")
             with self._lock:
@@ -842,7 +860,7 @@ class Lab:
                 "public_network": node.public_network, "configured_peers": list(node.configured_peers),
                 "peers": peers, "staletips": network.get("staletips", []), "tips": tips,
                 "blocks": records, "error": None, "p2p_port": node.p2p_port,
-                "rpc_port": node.rpc_port, "datadir": str(node.datadir)}
+                "rpc_port": node.rpc_port, "datadir": None if self.observer else str(node.datadir)}
 
     def _map_peers(self, states):
         listeners = {node.address: node.id for node in self._nodes.values()}
@@ -891,8 +909,9 @@ class Lab:
         for node in self._nodes.values():
             try:
                 if self.network.public_peers:
-                    events = node.log_reader.read(node.chain_dir / "debug.log")
-                    if node.running:
+                    log_path = node.log_file if self.observer else node.chain_dir / "debug.log"
+                    events = node.log_reader.read(log_path) if log_path else []
+                    if node.running and not self.observer:
                         if rotate_log(node.chain_dir / "debug.log", node.process) and node.log_reader.lag_bytes:
                             self._event("observation_gap", "%s rotated a busy log before all messages could be read" % node.name,
                                         node=node.id, details={"unread_bytes": node.log_reader.lag_bytes})
@@ -946,13 +965,15 @@ class Lab:
         with self._lock:
             previous = {item["id"]: copy.deepcopy(item) for item in self._state["nodes"]}
         for node in self._nodes.values():
-            if node.running:
+            if node.running or self.observer:
                 try:
                     states.append(self._collect(node))
                     continue
                 except (RPCError, OSError, ValueError) as error:
                     node.error = str(error)
                     node.status = "unavailable"
+                    if self.observer:
+                        node.available = False
             elif node.status == "running":
                 node.status, node.error = "error", "Node process exited; inspect console.log in its datadir"
                 node.mining["enabled"] = False

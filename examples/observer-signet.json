@@ -1,0 +1,11 @@
+{
+  "nodes": [
+    {
+      "name": "Signet VPS",
+      "rpc_url": "http://127.0.0.1:38332",
+      "cookie_file": "/bitcoin/.cookie",
+      "log_file": "/bitcoin/debug.log",
+      "p2p_address": "127.0.0.1:38333"
+    }
+  ]
+}

@@ -6,8 +6,15 @@ const short = (hash, length = 9) => hash ? String(hash).slice(0, length) : "—"
 const externalPeer = id => state.external_peers.find(peer => peer.id === id);
 const nameOf = id => state.nodes.find(node => node.id === id)?.name || externalPeer(id)?.address || id || "peer";
 const networkName = () => state.session.network || "regtest";
-const monitoring = () => networkName() === "testnet4";
-const supports = capability => state.session.capabilities?.[capability] ?? (["mining", "forks", "bootstrap"].includes(capability) ? !monitoring() : monitoring());
+const monitoring = () => ["testnet4", "signet"].includes(networkName());
+const networkLabel = () => ({testnet4: "Testnet4", signet: "Signet", regtest: "Regtest"}[networkName()] || networkName());
+const observing = () => state.session.observer === true;
+const canManage = () => receivedState && !observing() && state.session.capabilities?.management !== false;
+const managementControls = '[data-lifecycle], [data-connection], [data-mine], ' + ["add-node", "connections", "mode", "peers", "miner", "mine-selected", "fork", "bootstrap", "monitor", "stop-all", "reset"].map(name => `[data-action="${name}"]`).join(", ");
+function hideManagementControls(root = document) {
+  if (!canManage()) root.querySelectorAll(managementControls).forEach(control => { control.hidden = true; });
+}
+const supports = capability => (!observing() || !["management", "mining", "forks", "bootstrap", "public_peers"].includes(capability)) && (state.session.capabilities?.[capability] ?? (["mining", "forks", "bootstrap"].includes(capability) ? !monitoring() : monitoring()));
 const percent = value => `${(Math.min(1, Math.max(0, Number(value) || 0)) * 100).toFixed(2)}%`;
 const storageSize = value => Number.isFinite(value) ? `${(value / 1073741824).toFixed(2)} GiB` : "—";
 const modeLabel = mode => ({none: "Disabled", headers: "Headers", blocks: "Blocks"}[mode] || mode || "—");
@@ -58,6 +65,7 @@ function setHTML(element, html) {
     element.innerHTML = html;
     element._html = html;
   }
+  hideManagementControls(element);
 }
 
 function toast(message, error = false) {
@@ -75,6 +83,7 @@ function connection(online) {
 }
 
 async function action(actionName, params = {}) {
+  if (!canManage() && actionName !== "clear_events") throw new Error("This observer only reads node state. Manage the node on its host.");
   const response = await fetch("/api/action", {
     method: "POST", headers: {"Content-Type": "application/json", "X-Lab-Request": "1"},
     body: JSON.stringify({action: actionName, ...params})
@@ -121,14 +130,14 @@ function render() {
   const focusValue = focusAttribute ? focused.getAttribute(focusAttribute) : null;
   const focusId = focused?.getAttribute("data-id");
   const focusOwner = focused?.getAttribute("data-owner");
-  $("#networkCrumb").textContent = monitoring() ? "Testnet4 monitor" : "Regtest lab";
+  $("#networkCrumb").textContent = monitoring() ? `${networkLabel()} ${observing() ? "observer" : "monitor"}` : "Regtest lab";
   const started = new Date(Number(state.session.started_at) * 1000);
   $("#sessionCrumb").textContent = monitoring() ? "Persistent profile" : Number.isNaN(started.getTime()) ? "Session" : `Session ${started.toLocaleDateString([], {day: "numeric", month: "short"})}, ${started.toLocaleTimeString([], {hour12: false, hour: "2-digit", minute: "2-digit"})}`;
-  $("#workspaceTitle").textContent = monitoring() ? "Testnet4 monitor" : "Regtest workspace";
-  $("#welcomeTitle").textContent = monitoring() ? "Your window into testnet4." : "Three nodes. One shared chain.";
-  $("#welcomeDescription").textContent = monitoring() ? "Start a node from your BIP332 branch, discover public peers, and watch it synchronize. Its downloaded chain is retained between visits." : "Start A → B → C with five common blocks. Create a fork on A, then watch its announcement reach B and C.";
-  $("#chainDescription").textContent = monitoring() ? "Managed nodes only; gaps between heights are compressed" : "";
-  $("#workspaceFooter").textContent = monitoring() ? "Testnet4 · Persistent monitoring · Mining and forks available on regtest" : "Local experiment · Regtest";
+  $("#workspaceTitle").textContent = monitoring() ? `${networkLabel()} ${observing() ? "observer" : "monitor"}` : "Regtest workspace";
+  $("#welcomeTitle").textContent = monitoring() ? `Your window into ${networkLabel()}.` : "Three nodes. One shared chain.";
+  $("#welcomeDescription").textContent = observing() ? "Waiting for the nodes listed in the observer configuration. Node services are managed on their host." : monitoring() ? "Start a node from your BIP332 branch, discover public peers, and watch it synchronize. Its downloaded chain is retained between visits." : "Start A → B → C with five common blocks. Create a fork on A, then watch its announcement reach B and C.";
+  $("#chainDescription").textContent = monitoring() ? `${observing() ? "Observed" : "Managed"} nodes only; gaps between heights are compressed` : "";
+  $("#workspaceFooter").textContent = monitoring() ? `${networkLabel()} · ${observing() ? "Read-only observer · Node services managed on their host" : "Persistent monitoring · Mining and forks available on regtest"}` : "Local experiment · Regtest";
   $("#forkButton").hidden = !supports("forks");
   $("#forkButton").disabled = !state.nodes.some(node => node.running);
   $("#mineButton").hidden = !supports("mining");
@@ -138,14 +147,15 @@ function render() {
   $("#welcome").hidden = state.nodes.length > 0;
   $("#liveWorkspace").hidden = state.nodes.length === 0;
   $("#networkPanel").hidden = !monitoring();
-  document.querySelectorAll('[data-action="stop-all"]').forEach(button => { button.disabled = !state.nodes.some(node => node.running); });
+  document.querySelectorAll('[data-action="add-node"], [data-action="connections"]').forEach(button => { button.hidden = !canManage(); });
+  document.querySelectorAll('[data-action="stop-all"]').forEach(button => { button.hidden = !canManage(); button.disabled = !state.nodes.some(node => node.running); });
   document.querySelectorAll('[data-action="reset"]').forEach(button => {
     button.hidden = monitoring();
     button.disabled = !state.session.reset_supported || !state.nodes.length || activeJobs().length > 0;
     button.title = state.session.reset_supported ? "Start again with an empty workspace" : "Restart the lab server to enable reset";
   });
   document.querySelectorAll('[data-action="bootstrap"]').forEach(button => { button.hidden = !supports("bootstrap"); button.disabled = activeJobs().length > 0; });
-  document.querySelectorAll('[data-action="monitor"]').forEach(button => { button.hidden = !monitoring(); button.disabled = activeJobs().length > 0; });
+  document.querySelectorAll('[data-action="monitor"]').forEach(button => { button.textContent = `Monitor ${networkLabel()}`; button.hidden = !monitoring() || !canManage(); button.disabled = activeJobs().length > 0; });
   document.querySelectorAll('[data-action="clear-events"]').forEach(button => { button.hidden = !monitoring(); button.disabled = !state.events.length || activeJobs().length > 0; });
   renderJobs();
   renderNodes();
@@ -153,6 +163,9 @@ function render() {
     renderSummary(); if (monitoring()) renderNetwork(); renderInspector(); renderChains(); renderTrace(); renderEvents();
   }
   applyLinks();
+  hideManagementControls();
+  $(".sidebar-footer p").textContent = observing() ? "Read-only RPC and optional network logs from existing nodes. Node services remain under your control." : "Each node is a real bitcoind process. Views come from RPC and captured P2P messages.";
+  $(".workspace-footer > span:last-child").textContent = observing() ? "Node lifecycle controls disabled" : "Signet monitoring available in observer mode";
   // Live snapshots replace SVG and panel contents. Preserve the current
   // keyboard target so a refresh does not interrupt navigation or activation.
   if (focusRoot && focusAttribute && !focused.isConnected) {
@@ -401,10 +414,10 @@ function renderInspector() {
     const node = state.nodes.find(item => item.id === selectedNode) || state.nodes[0];
     if (!node) return;
     const peers = node.peers?.length || 0;
-    const sync = monitoring() ? `<div class="sync-status">${metric("Chain state", node.running ? node.ibd ? pill("Initial synchronization", "amber") : pill("Synchronized", "green") : pill("Stopped"))}<progress max="1" value="${Math.min(1, Math.max(0, Number(node.verification_progress) || 0))}" aria-label="Chain verification progress"></progress>${metric("Verification progress", `<span class="mono">${percent(node.verification_progress)}</span>`)}${metric("Headers known", `<span class="mono">${escape(node.headers ?? "—")}</span>`)}${metric("Block storage", `${storageSize(node.size_on_disk)}${node.pruned ? " · pruned" : ""}`)}</div>` : "";
-    const status = node.running ? pill(monitoring() ? `Running on ${networkName()}` : "Running", "green") : pill("Stopped · data retained");
+    const sync = monitoring() ? `<div class="sync-status">${metric("Chain state", node.running ? node.ibd ? pill("Initial synchronization", "amber") : pill("Synchronized", "green") : pill(observing() ? "RPC unavailable" : "Stopped"))}<progress max="1" value="${Math.min(1, Math.max(0, Number(node.verification_progress) || 0))}" aria-label="Chain verification progress"></progress>${metric("Verification progress", `<span class="mono">${percent(node.verification_progress)}</span>`)}${metric("Headers known", `<span class="mono">${escape(node.headers ?? "—")}</span>`)}${metric("Block storage", `${storageSize(node.size_on_disk)}${node.pruned ? " · pruned" : ""}`)}</div>` : "";
+    const status = node.running ? pill(monitoring() ? `Running on ${networkName()}` : "Running", "green") : pill(observing() ? "RPC unavailable" : "Stopped · data retained");
     const stale = node.staletips?.length || 0;
-    html = detailHead(`Node ${node.name}`, {end: status}) + `<div class="detail-body">${metric("Stale-tip mode", `<button class="inline-select" data-action="mode" data-id="${escape(node.id)}" aria-label="Change stale-tip mode">${escape(modeLabel(node.mode))}${CHEVRON}</button>`)}${metric("Height", `<span class="mono">${escape(node.height ?? "—")}</span>`)}${sync}${metric("Peers", `<span class="mono">${peers}</span>`)}${metric("Stale tips known", `<span class="mono" ${stale ? 'style="color:var(--amber-text)"' : ""}>${stale}</span>`)}${supports("mining") ? metric("Miner", node.mining?.enabled ? `<span class="running-miner">Every ${Number(node.mining.interval)}s</span>` : "Paused") : ""}${metric("P2P / RPC ports", `<span class="mono">${escape(node.p2p_port ?? "—")} / ${escape(node.rpc_port ?? "—")}</span>`)}${sectionHead("Tip hash", node.best_hash ? copyButton(node.best_hash) : "")}<div class="hash-box">${escape(node.best_hash || "Waiting for chain state…")}</div>${node.error ? `<p class="form-error">${escape(node.error)}</p>` : ""}${monitoring() && node.ibd ? '<p class="help-text">Stale-tip announcements are paused during initial synchronization.</p>' : ""}<div class="detail-actions">${supports("mining") ? `<button class="button" data-action="miner" data-id="${escape(node.id)}">Miner settings</button>` : ""}${supports("public_peers") ? `<button class="button" data-action="peers" data-id="${escape(node.id)}">Connection settings</button>` : ""}<button class="button ${node.running ? "danger" : ""}" data-lifecycle="${escape(node.id)}">${node.running ? "Stop node" : "Start node"}</button></div><p class="help-text">Changing mode restarts the node and reconnects its peers.</p></div>`;
+    html = detailHead(`Node ${node.name}`, {end: status}) + `<div class="detail-body">${metric("Stale-tip mode", observing() ? escape(modeLabel(node.mode)) : `<button class="inline-select" data-action="mode" data-id="${escape(node.id)}" aria-label="Change stale-tip mode">${escape(modeLabel(node.mode))}${CHEVRON}</button>`)}${metric("Height", `<span class="mono">${escape(node.height ?? "—")}</span>`)}${sync}${metric("Peers", `<span class="mono">${peers}</span>`)}${metric("Stale tips known", `<span class="mono" ${stale ? 'style="color:var(--amber-text)"' : ""}>${stale}</span>`)}${supports("mining") ? metric("Miner", node.mining?.enabled ? `<span class="running-miner">Every ${Number(node.mining.interval)}s</span>` : "Paused") : ""}${metric("P2P / RPC ports", `<span class="mono">${escape(node.p2p_port ?? "—")} / ${escape(node.rpc_port ?? "—")}</span>`)}${sectionHead("Tip hash", node.best_hash ? copyButton(node.best_hash) : "")}<div class="hash-box">${escape(node.best_hash || "Waiting for chain state…")}</div>${node.error ? `<p class="form-error">${escape(node.error)}</p>` : ""}${monitoring() && node.ibd ? '<p class="help-text">Stale-tip announcements are paused during initial synchronization.</p>' : ""}<div class="detail-actions">${supports("mining") ? `<button class="button" data-action="miner" data-id="${escape(node.id)}">Miner settings</button>` : ""}${supports("public_peers") ? `<button class="button" data-action="peers" data-id="${escape(node.id)}">Connection settings</button>` : ""}<button class="button ${node.running ? "danger" : ""}" data-lifecycle="${escape(node.id)}">${node.running ? "Stop node" : "Start node"}</button></div>${observing() ? '<p class="help-text">Read-only observer. Node settings and lifecycle are managed on the host.</p>' : '<p class="help-text">Changing mode restarts the node and reconnects its peers.</p>'}</div>`;
   }
   setHTML($("#inspector"), html);
 }
@@ -604,7 +617,7 @@ function renderEvents() {
     const route = event.source && event.target ? `${escape(nameOf(event.source))}${ARROW}${escape(nameOf(event.target))}` : escape(nameOf(event.node));
     const prose = !["sent", "recv"].includes(event.direction);
     return `<button class="event-row ${selected.type === "event" && String(selected.id) === String(event.id) ? "selected" : ""}" data-event="${escape(event.id)}"><span class="event-time">${escape(timeOf(event))}</span><span class="event-route">${route}<span class="event-observation">${escape(prose ? event.kind === "reorg" ? "chain" : "lab" : observationOf(event))}</span></span><span class="tag ${kindClass(event.kind)}">${escape(event.kind)}</span><span class="event-description ${prose ? "prose" : ""}">${escape(eventDescription(event))}</span><span class="event-size">${event.size == null || prose ? "–" : bytes(Number(event.size))}</span></button>`;
-  }).join("") : `<p class="empty-message">No matching messages yet.<br>${blockFilter ? "Nothing captured mentions this block." : monitoring() ? "Connect to peers to observe network activity. BIP332 requires support from the peer." : "Connect nodes or create a fork to watch the exchange."}</p>`);
+  }).join("") : `<p class="empty-message">No matching messages yet.<br>${blockFilter ? "Nothing captured mentions this block." : observing() ? "Message events require an accessible network debug log. Earlier negotiation may not have been observed." : monitoring() ? "Connect to peers to observe network activity. BIP332 requires support from the peer." : "Connect nodes or create a fork to watch the exchange."}</p>`);
   const limit = $("#timelineLimit");
   limit.hidden = filtered.length <= 150;
   limit.textContent = `Showing the latest 150 of ${filtered.length} matching messages. Narrow the filters or export the session for all retained events.`;
@@ -655,11 +668,11 @@ function nodeOptions(nodes = state.nodes, selectedId = selectedNode) {
 }
 
 function addNodeDialog() {
-  openDialog("Add a node", `<p>${monitoring() ? "Start a local testnet4 node. Each node downloads and verifies its own chain, which is retained when the monitor restarts." : "Launch an isolated Bitcoin Core process. Connect it to peers after it starts."}</p><label class="field">Name<input name="name" maxlength="24" required value="${escape(String.fromCharCode(65 + state.nodes.length % 26))}" autocomplete="off"></label><label class="field">Stale-tip mode<select name="mode">${modes}</select></label>${monitoring() ? peerFields() : state.nodes.some(node => node.running) ? `<label class="field">Start with the chain from<select name="seed_from">${nodeOptions(state.nodes.filter(node => node.running))}</select><small>Only the active chain is copied. Stale branches must arrive over P2P.</small></label>` : ""}`, "Start node", values => action("add_node", {name: values.get("name"), mode: values.get("mode"), ...(monitoring() ? peerValues(values) : values.get("seed_from") ? {seed_from: values.get("seed_from")} : {})}));
+  openDialog("Add a node", `<p>${monitoring() ? `Start a local ${escape(networkLabel())} node. Each node downloads and verifies its own chain, which is retained when the monitor restarts.` : "Launch an isolated Bitcoin Core process. Connect it to peers after it starts."}</p><label class="field">Name<input name="name" maxlength="24" required value="${escape(String.fromCharCode(65 + state.nodes.length % 26))}" autocomplete="off"></label><label class="field">Stale-tip mode<select name="mode">${modes}</select></label>${monitoring() ? peerFields() : state.nodes.some(node => node.running) ? `<label class="field">Start with the chain from<select name="seed_from">${nodeOptions(state.nodes.filter(node => node.running))}</select><small>Only the active chain is copied. Stale branches must arrive over P2P.</small></label>` : ""}`, "Start node", values => action("add_node", {name: values.get("name"), mode: values.get("mode"), ...(monitoring() ? peerValues(values) : values.get("seed_from") ? {seed_from: values.get("seed_from")} : {})}));
 }
 
 function peerFields(node = {}) {
-  return `<label class="check-label peer-discovery"><input type="checkbox" name="public_network" ${node.public_network !== false ? "checked" : ""}> Discover public testnet4 peers automatically</label><label class="field">Additional peers<textarea name="peers" rows="3" spellcheck="false" placeholder="host:48333">${escape((node.configured_peers || []).join("\n"))}</textarea><small>One host:port per line, or separated by commas. IPv6 addresses use [address]:port. With discovery off and this field empty, only connections you create between lab nodes are used.</small></label>`;
+  return `<label class="check-label peer-discovery"><input type="checkbox" name="public_network" ${node.public_network !== false ? "checked" : ""}> Discover public ${escape(networkLabel())} peers automatically</label><label class="field">Additional peers<textarea name="peers" rows="3" spellcheck="false" placeholder="host:${networkName() === "signet" ? 38333 : 48333}">${escape((node.configured_peers || []).join("\n"))}</textarea><small>One host:port per line, or separated by commas. IPv6 addresses use [address]:port. With discovery off and this field empty, only connections you create between lab nodes are used.</small></label>`;
 }
 
 function peerValues(values) {
@@ -738,7 +751,7 @@ function dialogSignal() {
 }
 
 function sessionDialog() {
-  openDialog("Session details", `<p>${monitoring() ? "Managed nodes run locally and connect to testnet4. Node settings and downloaded chains are retained in this persistent profile when the server restarts." : "All nodes run locally. Captures and node data are retained in this session’s directory."}</p><label class="field">Network<div class="hash-box">${escape(networkName())}</div></label><label class="field">Bitcoin Core binary<div class="hash-box session-path">${escape(state.session.binary || "Not reported")}</div></label><label class="field">${monitoring() ? "Persistent profile" : "Session directory"}<div class="hash-box session-path">${escape(state.session.run_dir || "Not reported")}</div></label><p>Block trees display the most recent ${Number(state.session.window_blocks || 80)} heights per managed node.${monitoring() ? " External peers’ complete block trees are not available. Gaps between displayed heights are compressed." : ""}</p><p>${monitoring() ? "Message events come from bounded Bitcoin Core network logs. Full P2P payloads are not captured, so initial synchronization does not duplicate the downloaded chain in capture files. Received BIP332 preferences are shown when Core logs them; outgoing feature payloads remain unobserved." : "The timeline keeps the latest captured events in memory; the complete capture files remain on disk."}</p><p>${monitoring() ? "Clear timeline preserves node data and connections. Mining and fork creation are available only in the regtest lab." : "Custom signet is reserved for a later network adapter."}</p><a class="button full" href="/api/export" download>Export current session as JSON</a>`, "", null);
+  openDialog("Session details", `<p>${observing() ? "This observer reads existing nodes through RPC and optional network logs. Stopping it leaves those nodes running. Change their settings through your node service configuration." : monitoring() ? `Managed nodes run locally and connect to ${escape(networkLabel())}. Node settings and downloaded chains are retained in this persistent profile when the server restarts.` : "All nodes run locally. Captures and node data are retained in this session’s directory."}</p><label class="field">Network<div class="hash-box">${escape(networkName())}</div></label><label class="field">Bitcoin Core binary<div class="hash-box session-path">${escape(observing() ? "Not required for observer mode" : state.session.binary || "Not reported")}</div></label><label class="field">${monitoring() ? "Persistent profile" : "Session directory"}<div class="hash-box session-path">${escape(state.session.run_dir || "Not reported")}</div></label><p>Block trees display the most recent ${Number(state.session.window_blocks || 80)} heights per ${observing() ? "observed" : "managed"} node.${monitoring() ? " External peers’ complete block trees are not available. Gaps between displayed heights are compressed." : ""}</p><p>${monitoring() ? "Message events come from bounded Bitcoin Core network logs. Full P2P payloads are not captured, so initial synchronization does not duplicate the downloaded chain in capture files. Received BIP332 preferences are shown when Core logs them; outgoing feature payloads remain unobserved." : "The timeline keeps the latest captured events in memory; the complete capture files remain on disk."}</p><p>${monitoring() ? "Clear timeline preserves node data and connections. Mining and fork creation are available only in the regtest lab." : "Signet is supported in observer mode; mining and fork creation use regtest."}</p><a class="button full" href="/api/export" download>Export current session as JSON</a>`, "", null);
 }
 
 function resetDialog() {
@@ -753,7 +766,7 @@ function resetDialog() {
 
 document.addEventListener("click", event => {
   const control = event.target.closest("[data-action], [data-node], [data-peer], [data-link], [data-block], [data-event], [data-mine], [data-lifecycle], [data-connection], [data-dismiss-job]");
-  if (!control || control.disabled) return;
+  if (!control || control.disabled || (!canManage() && control.matches(managementControls))) return;
   if (control.dataset.node !== undefined) {
     selectedNode = control.dataset.node; selected = {type: "node", id: selectedNode}; render();
   } else if (control.dataset.peer !== undefined) {

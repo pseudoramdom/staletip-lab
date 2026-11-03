@@ -1,0 +1,9 @@
+*
+!Dockerfile
+!LICENSE
+!run-lab.py
+!relay_lab/
+!relay_lab/**
+**/__pycache__/
+**/*.py[cod]
+**/.DS_Store

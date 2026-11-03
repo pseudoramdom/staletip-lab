@@ -1,0 +1,11 @@
+{
+  "nodes": [
+    {
+      "name": "Testnet4 VPS",
+      "rpc_url": "http://127.0.0.1:48332",
+      "cookie_file": "/bitcoin/.cookie",
+      "log_file": "/bitcoin/debug.log",
+      "p2p_address": "127.0.0.1:48333"
+    }
+  ]
+}

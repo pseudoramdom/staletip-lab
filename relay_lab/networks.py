@@ -49,3 +49,11 @@ class Testnet4(Network):
 
     def arguments(self):
         return ["-testnet4"]
+
+
+class Signet(Testnet4):
+    name = "signet"
+    chain_directory = "signet"
+
+    def arguments(self):
+        return ["-signet"]
