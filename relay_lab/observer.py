@@ -108,7 +108,6 @@ class ObserverNode(Node):
                 self.generation += 1
                 self.started_at = time.time()
                 self.records.clear()
-                self.was_active.clear()
             self.last_uptime = uptime
             self.available = True
         return result

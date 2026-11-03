@@ -47,7 +47,6 @@ class Node:
         self.capture = CaptureReader()
         self.log_reader = NetworkLogReader()
         self.records = {}
-        self.was_active = set()
         self.status = "stopped"
         self.error = None
         self._http = urllib.request.build_opener(urllib.request.ProxyHandler({}))
@@ -822,7 +821,8 @@ class Lab:
                 if cached is None:
                     header = node.rpc("getblockheader", block)
                     cached = {"hash": block, "parent": header.get("previousblockhash"),
-                              "height": header["height"], "time": header["time"], "have_data": False}
+                              "height": header["height"], "time": header["time"],
+                              "difficulty": header.get("difficulty"), "have_data": False}
                 if cached["height"] < cutoff:
                     break
                 if block not in records:
@@ -842,11 +842,8 @@ class Lab:
                 if tip["status"] in ("active", "valid-fork"):
                     validated.add(block)
                 block = cached["parent"]
-        # A block that left the active chain while still known was reorganized away.
-        node.was_active = {block for block in node.was_active | active if block in records}
         for block, record in records.items():
             record["active"] = block in active
-            record["was_active"] = block in node.was_active
             record["validity"] = "invalid" if tip_status.get(block) == "invalid" else (
                 "validated" if block in validated else "headers-valid")
         node.records = records

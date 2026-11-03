@@ -2,7 +2,9 @@
 
 const $ = (selector, root = document) => root.querySelector(selector);
 const escape = value => String(value ?? "").replace(/[&<>"']/g, char => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[char]));
-const short = (hash, length = 9) => hash ? String(hash).slice(0, length) : "—";
+// Block hashes on test networks and mainnet all begin with zeros, so the end
+// is the part that tells them apart.
+const short = (hash, length = 6) => hash ? `…${String(hash).slice(-length)}` : "—";
 const externalPeer = id => state.external_peers.find(peer => peer.id === id);
 const nameOf = id => state.nodes.find(node => node.id === id)?.name || externalPeer(id)?.address || id || "peer";
 const networkName = () => state.session.network || "regtest";
@@ -29,7 +31,7 @@ const hashesOf = event => { const d = event.details || {}; return [...(d.hashes 
 const duration = ms => ms < 10 ? `${+ms.toFixed(1)} ms` : ms < 1000 ? `${Math.round(ms)} ms` : `${(ms / 1000).toFixed(ms < 10000 ? 2 : 1)} s`;
 const bytes = value => value >= 10240 ? `${(value / 1024).toFixed(1)} KiB` : `${Math.round(value)} B`;
 const RELAYED = ["staletip", "headers", "block", "cmpctblock"];
-const STATUS_LABEL = {active: "Active chain", data: "Full block", headers: "Header only", reorged: "Reorged out", invalid: "Invalid", unknown: "Not known"};
+const STATUS_LABEL = {active: "Active chain", data: "Full block", headers: "Header only", invalid: "Invalid", unknown: "Not known"};
 const TYPES = [
   ["all", "All", () => true],
   ["staletip", "Stale relay", event => event.kind === "staletip"],
@@ -229,20 +231,27 @@ function renderSummary() {
   const agreed = links.filter(negotiated).length;
   const note = links.length ? `BIP332 negotiated on ${agreed === links.length ? links.length === 1 ? "the link" : links.length === 2 ? "both links" : `all ${links.length} links` : `${agreed} of ${links.length} links`}` : "No connections between lab nodes";
   const external = state.external_peers.length ? ` · ${state.external_peers.length} external peer${state.external_peers.length === 1 ? "" : "s"}` : "";
-  setHTML($("#summary"), `<span>Tip <b>${best ? Number(best.height ?? 0) : "—"}</b>${best ? ` · <span class="mono">${escape(short(best.best_hash, 8))}</span>` : ""}</span><span class="${stale.length ? "amber" : ""}" title="${stale.length ? `Highest at height ${highest}` : ""}"><b>${stale.length}</b> stale tip${stale.length === 1 ? "" : "s"}</span><span><b>${messages}</b> ${messages === 1 ? "message" : "messages"}</span>${state.nodes.length ? `<span class="topology">${topology || `<span class="topology-node">${escape(state.nodes[0].name)}</span>`}<span>&nbsp;· ${escape(note + external)}</span></span>` : ""}`);
+  setHTML($("#summary"), `<span>Tip <b>${best ? Number(best.height ?? 0) : "—"}</b>${best ? ` · <span class="mono">${escape(short(best.best_hash))}</span>` : ""}</span><span class="${stale.length ? "amber" : ""}" title="${stale.length ? `Highest at height ${highest}` : ""}"><b>${stale.length}</b> stale tip${stale.length === 1 ? "" : "s"}</span><span><b>${messages}</b> ${messages === 1 ? "message" : "messages"}</span>${state.nodes.length ? `<span class="topology">${topology || `<span class="topology-node">${escape(state.nodes[0].name)}</span>`}<span>&nbsp;· ${escape(note + external)}</span></span>` : ""}`);
 }
 
 function networkPositions() {
   const columns = Math.min(4, Math.max(1, state.nodes.length));
   const rows = Math.ceil(state.nodes.length / columns);
   const width = Math.max(state.external_peers.length ? 720 : 520, columns * 180 + 50);
-  const externalTop = Math.max(200, rows * 150 + 40);
-  const height = Math.max(245, rows * 150 + 20, state.external_peers.length ? externalTop + Math.ceil(state.external_peers.length / 5) * 90 + 25 : 0);
+  const externalTop = Math.max(170, rows * 150 + 20);
+  const height = Math.max(245, rows * 150 + 20, state.external_peers.length ? externalTop + Math.ceil(state.external_peers.length / 5) * 46 + 50 : 0);
   const positions = {};
   state.nodes.forEach((node, index) => { positions[node.id] = {x: 105 + (index % columns) * ((width - 210) / Math.max(1, columns - 1)), y: 112 + Math.floor(index / columns) * 145}; });
   if (state.nodes.length === 1) positions[state.nodes[0].id].x = width / 2;
-  state.external_peers.forEach((peer, index) => { positions[peer.id] = {x: 85 + (index % 5) * ((width - 170) / 4), y: externalTop + 45 + Math.floor(index / 5) * 90}; });
+  state.external_peers.forEach((peer, index) => { positions[peer.id] = {x: 85 + (index % 5) * ((width - 170) / 4), y: externalTop + 40 + Math.floor(index / 5) * 46}; });
   return {positions, width, height};
+}
+
+// Ports and long onion names do not fit the compact peer box; the full
+// address stays in the tooltip and the detail panel.
+function peerLabel(address) {
+  const host = String(address).replace(/:\d+$/, "").replace(/^\[(.*)\]$/, "$1");
+  return host.length > 15 ? `${host.slice(0, 14)}…` : host;
 }
 
 function renderNetwork() {
@@ -259,12 +268,12 @@ function renderNetwork() {
   const externalNodes = state.external_peers.map(peer => {
     const {x, y} = positions[peer.id];
     const link = state.links.find(item => item.a === peer.id || item.b === peer.id);
-    const negotiation = link?.negotiation?.[peer.node] || {};
-    return `<g class="node-visual external-peer ${selected.type === "peer" && selected.id === peer.id ? "selected" : ""}" data-peer="${escape(peer.id)}" role="button" tabindex="0" aria-label="Inspect external peer ${escape(peer.address)}"><rect class="node-box" x="${x - 62}" y="${y - 29}" width="124" height="58" rx="8"/><text class="node-label" x="${x - 52}" y="${y - 9}">${escape(short(peer.address, 17))}</text><text class="node-subtitle" x="${x - 52}" y="${y + 6}">${isPresent(negotiation.received) ? "BIP332 advertised" : "External peer"}</text><text class="node-subtitle" x="${x - 52}" y="${y + 20}">${peer.inbound ? "Inbound" : "Outbound"} · ${escape(nameOf(peer.node))}</text></g>`;
+    const advertised = isPresent((link?.negotiation?.[peer.node] || {}).received);
+    return `<g class="node-visual external-peer ${selected.type === "peer" && selected.id === peer.id ? "selected" : ""}" data-peer="${escape(peer.id)}" role="button" tabindex="0" aria-label="Inspect external peer ${escape(peer.address)}"><title>${escape(peer.address)} · ${peer.inbound ? "Inbound" : "Outbound"} · ${escape(nameOf(peer.node))}${advertised ? " · BIP332 advertised" : ""}</title><rect class="node-box" x="${x - 56}" y="${y - 15}" width="112" height="30" rx="6"/>${advertised ? `<circle cx="${x - 45}" cy="${y}" r="2.5" fill="#d9920b"/>` : ""}<text class="node-label peer-label" x="${x - 38}" y="${y}">${escape(peerLabel(peer.address))}</text></g>`;
   }).join("");
   const nodes = state.nodes.map(node => {
     const {x, y} = positions[node.id];
-    return `<g class="node-visual ${selectedNode === node.id ? "selected" : ""} ${node.running ? "" : "stopped"}" data-node="${escape(node.id)}" role="button" tabindex="0" aria-label="Inspect node ${escape(node.name)}"><rect class="node-box" x="${x - 62}" y="${y - 42}" width="124" height="84" rx="8"/><circle cx="${x - 45}" cy="${y - 21}" r="3" fill="${node.running ? "#1a7f37" : "#8b919a"}"/><text class="node-label" x="${x - 35}" y="${y - 17}">${escape(String(node.name).slice(0, 13))}</text><text class="node-subtitle" x="${x - 45}" y="${y + 2}">${escape(modeLabel(node.mode))}${node.mining?.enabled ? " · mining" : ""}</text><text class="node-height" x="${x - 45}" y="${y + 23}">${node.running ? `#${Number(node.height ?? 0)} · ${escape(short(node.best_hash, 6))}` : "Stopped"}</text></g>`;
+    return `<g class="node-visual ${selectedNode === node.id ? "selected" : ""} ${node.running ? "" : "stopped"}" data-node="${escape(node.id)}" role="button" tabindex="0" aria-label="Inspect node ${escape(node.name)}"><rect class="node-box" x="${x - 62}" y="${y - 42}" width="124" height="84" rx="8"/><circle cx="${x - 45}" cy="${y - 21}" r="3" fill="${node.running ? "#1a7f37" : "#8b919a"}"/><text class="node-label" x="${x - 35}" y="${y - 17}">${escape(String(node.name).slice(0, 13))}</text><text class="node-subtitle" x="${x - 45}" y="${y + 2}">${escape(modeLabel(node.mode))}${node.mining?.enabled ? " · mining" : ""}</text><text class="node-height" x="${x - 45}" y="${y + 23}">${node.running ? `#${Number(node.height ?? 0)} · ${escape(short(node.best_hash))}` : "Stopped"}</text></g>`;
   }).join("");
   const packets = window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "" : newPackets.map((event, i) => {
     const a = positions[event.source], b = positions[event.target];
@@ -298,7 +307,6 @@ function blockStatus(node, hash) {
   if (!known) return "unknown";
   if (known.validity === "invalid") return "invalid";
   if (known.active) return "active";
-  if (known.was_active) return "reorged";
   return known.have_data ? "data" : "headers";
 }
 
@@ -325,7 +333,6 @@ function provenance(hash) {
   }
   for (const event of mentions) {
     if (event.kind === "reorg" && isManaged(event.node)) entry(event.node).reorg ??= event.time;
-    else if (event.kind === "reorg" && isManaged(event.node)) entry(event.node).reorg ??= event.time;
     else if (event.direction === "recv" && RELAYED.includes(event.kind) && isManaged(event.node)) {
       const from = nameOf(event.source);
       learn(event.node, event.time, event.kind === "staletip" ? `staletip from ${from}` : `${event.kind} from ${from}`);
@@ -352,10 +359,14 @@ function knowledgeText(node, status, item, first) {
   else if (status === "active") parts.push("On the active chain");
   else if (status !== "unknown") parts.push("Learned before the timeline began");
   if (status === "headers" && node.mode === "headers") parts.push("Headers mode, not fetched");
-  if (status === "reorged") parts.push(item?.reorg && item.time !== null ? `Active for ${duration((item.reorg - item.time) * 1000)}, then reorged` : "Left the active chain");
+  if (item?.reorg && status !== "active") parts.push(item.time !== null ? `Active for ${duration((item.reorg - item.time) * 1000)}, then reorged` : "Left the active chain");
   if (status === "unknown" && !node.running) parts.push("Node stopped");
   const time = item?.time !== null && item?.time !== undefined && first !== null ? `+${duration((item.time - first) * 1000)}` : "";
   return {text: parts.join(" · "), time};
+}
+
+function difficultyText(value) {
+  return value >= 1 ? value.toLocaleString("en-US", {maximumFractionDigits: 2}) : value.toPrecision(3);
 }
 
 function blockInspector() {
@@ -363,8 +374,9 @@ function blockInspector() {
   const block = state.blocks.find(item => item.hash === hash);
   const statuses = state.nodes.map(node => blockStatus(node, hash));
   const known = statuses.filter(status => status !== "unknown");
-  const word = !known.length ? ["Not known", ""] : statuses.includes("active") ? known.every(status => status === "active") ? ["Active", "green"] : ["Mixed", ""] : known.every(status => status === "reorged") ? ["Reorged out", ""] : ["Stale", "amber"];
+  const word = !known.length ? ["Not known", ""] : statuses.includes("active") ? known.every(status => status === "active") ? ["Active", "green"] : ["Mixed", ""] : ["Stale", "amber"];
   const size = Math.max(0, ...state.nodes.map(node => Number(node.blocks?.[hash]?.size) || 0));
+  const difficulty = state.nodes.map(node => node.blocks?.[hash]?.difficulty).find(value => Number.isFinite(value));
   const parent = state.blocks.find(item => item.hash === block?.parent);
   const prime = blockLayout().positions.get(hash)?.lane > 0 ? "′" : "";
   const p = provenance(hash);
@@ -375,8 +387,8 @@ function blockInspector() {
     return `<div class="knowledge-row" data-link-node="${escape(node.id)}"><span class="node-name">${escape(node.name)}</span><i class="swatch ${status}"></i><div class="knowledge-text"><strong>${escape(label)}</strong>${text ? `<span>${escape(text)}</span>` : ""}</div><span class="knowledge-time">${escape(time)}</span></div>`;
   }).join("");
   const canFork = supports("forks") && state.nodes.some(node => node.blocks?.[hash]?.have_data && node.running);
-  return detailHead(block ? `Block ${block.height}${prime}` : "Selected block", {meta: short(hash, 8), closable: true}) +
-    `<div class="detail-body">${metric("Status", pill(word[0], word[1]))}${block ? metric("Height", `<span class="mono">${block.height}${parent ? ` · child of ${parent.height}` : ""}</span>`) : ""}${size ? metric("Size", `<span class="mono">${bytes(size)}</span>`) : ""}${sectionHead("Known by")}<div class="knowledge">${rows}</div>${sectionHead("Hash", copyButton(hash))}<div class="hash-box">${escape(hash)}</div>${supports("forks") ? `<div class="detail-actions"><button class="button full" data-action="fork" data-parent="${escape(hash)}" ${canFork ? "" : "disabled"}>Fork from this block</button></div>` : ""}</div>`;
+  return detailHead(block ? `Block ${block.height}${prime}` : "Selected block", {meta: short(hash), closable: true}) +
+    `<div class="detail-body">${metric("Status", pill(word[0], word[1]))}${difficulty !== undefined ? metric("Difficulty", `<span class="mono">${escape(difficultyText(difficulty))}</span>`) : ""}${block ? metric("Height", `<span class="mono">${block.height}${parent ? ` · child of ${parent.height}` : ""}</span>`) : ""}${size ? metric("Size", `<span class="mono">${bytes(size)}</span>`) : ""}${sectionHead("Known by")}<div class="knowledge">${rows}</div>${sectionHead("Hash", copyButton(hash))}<div class="hash-box">${escape(hash)}</div>${supports("forks") ? `<div class="detail-actions"><button class="button full" data-action="fork" data-parent="${escape(hash)}" ${canFork ? "" : "disabled"}>Fork from this block</button></div>` : ""}</div>`;
 }
 
 function renderInspector() {
@@ -407,7 +419,7 @@ function renderInspector() {
       const route = event.source && event.target ? `${nameOf(event.source)} → ${nameOf(event.target)}` : `${nameOf(event.node)} · ${event.direction || "lab"}`;
       const logged = event.evidence === "debug-log";
       const block = hashesOf(event).find(hash => state.blocks.some(item => item.hash === hash));
-      html = detailHead(event.kind, {meta: route, closable: true}) + `<div class="detail-body">${metric("Observation", escape(observationOf(event)))}${metric("Evidence", logged ? "Bitcoin Core network log" : event.direction === "local" ? "Lab activity" : "P2P message capture")}${metric("Time", `<span class="mono">${escape(timeOf(event, true))}</span>`)}${metric(logged ? "Size reported" : "Payload", event.size == null ? "Not reported" : `<span class="mono">${bytes(Number(event.size))}</span>`)}${event.details?.observation === "feature-support" ? '<p class="help-text">Core parsed this preference from a received feature message. This observation does not represent an additional transmission.</p>' : ""}${sectionHead("Payload")}<pre>${escape(JSON.stringify(event.details || {message: event.summary}, null, 2))}</pre><p class="help-text">${logged ? "This event comes from Core’s network log. The message payload is not captured. Receipt alone does not establish acceptance or onward relay." : "One transmission can produce a sent capture and a received capture. Receive timestamps show when Core processes the message; receipt alone does not establish validation or relay."}</p>${block ? `<div class="detail-actions"><button class="button full" data-block="${escape(block)}">Inspect block ${escape(short(block, 8))}</button></div>` : ""}</div>`;
+      html = detailHead(event.kind, {meta: route, closable: true}) + `<div class="detail-body">${metric("Observation", escape(observationOf(event)))}${metric("Evidence", logged ? "Bitcoin Core network log" : event.direction === "local" ? "Lab activity" : "P2P message capture")}${metric("Time", `<span class="mono">${escape(timeOf(event, true))}</span>`)}${metric(logged ? "Size reported" : "Payload", event.size == null ? "Not reported" : `<span class="mono">${bytes(Number(event.size))}</span>`)}${event.details?.observation === "feature-support" ? '<p class="help-text">Core parsed this preference from a received feature message. This observation does not represent an additional transmission.</p>' : ""}${sectionHead("Payload")}<pre>${escape(JSON.stringify(event.details || {message: event.summary}, null, 2))}</pre><p class="help-text">${logged ? "This event comes from Core’s network log. The message payload is not captured. Receipt alone does not establish acceptance or onward relay." : "One transmission can produce a sent capture and a received capture. Receive timestamps show when Core processes the message; receipt alone does not establish validation or relay."}</p>${block ? `<div class="detail-actions"><button class="button full" data-block="${escape(block)}">Inspect block ${escape(short(block))}</button></div>` : ""}</div>`;
     }
   }
   if (!html) {
@@ -446,10 +458,12 @@ function renderChains() {
   if (!blocks.length) { setHTML($("#chainCanvas"), `<p class="empty-message">${monitoring() ? "Waiting for chain state from your nodes. Synchronization may take time." : "Waiting for block headers. Mine a block to begin."}</p>`); return; }
   const heights = [...new Set(blocks.map(block => block.height))];
   const columns = new Map(heights.map((height, index) => [height, index]));
-  const half = 20, label = $("#chainCanvas").clientWidth < 500 ? 76 : 112, ruler = 28, lane = 36, trailing = 210;
+  // Size blocks to the longest height so six-digit testnet heights keep their padding.
+  const chars = Math.max(...blocks.map(block => String(block.height).length + (positions.get(block.hash).lane > 0 ? 1 : 0)));
+  const half = Math.max(26, Math.ceil(chars * 3.3) + 12), label = $("#chainCanvas").clientWidth < 500 ? 76 : 112, ruler = 28, lane = 38, trailing = 210;
   const available = $("#chainCanvas").clientWidth - 40 - label - 24 - trailing;
   const fitted = heights.length > 1 ? available / (heights.length - 1) : 88;
-  const step = Math.min(monitoring() ? 70 : 88, Math.max(56, fitted)) * zoom;
+  const step = Math.max(half * 2 + 20, Math.min(half * 2 + (monitoring() ? 36 : 48), Math.max(half * 2 + 24, fitted)) * zoom);
   const rowHeight = Math.max(72, lanes * lane + 24);
   const width = label + 24 + (heights.length - 1) * step + trailing;
   const height = ruler + state.nodes.length * rowHeight;
@@ -478,9 +492,9 @@ function renderChains() {
       const status = blockStatus(node, block.hash);
       const bx = x(block), by = y(top, block);
       const prime = positions.get(block.hash).lane > 0 ? "′" : "";
-      html += `<g class="block ${status} ${focus?.hash === block.hash ? "selected" : ""}" data-block="${escape(block.hash)}" data-owner="${escape(node.id)}" role="button" tabindex="0" aria-label="${escape(node.name)} block ${block.height}: ${STATUS_LABEL[status]}"><title>${escape(block.hash)} · ${STATUS_LABEL[status]}</title><rect class="ring" x="${bx - half - 4}" y="${by - 16}" width="${half * 2 + 8}" height="32" rx="7"/><rect class="body" x="${bx - half}" y="${by - 12}" width="${half * 2}" height="24" rx="4"/><text x="${bx}" y="${by}">${block.height}${prime}</text></g>`;
+      html += `<g class="block ${status} ${focus?.hash === block.hash ? "selected" : ""}" data-block="${escape(block.hash)}" data-owner="${escape(node.id)}" role="button" tabindex="0" aria-label="${escape(node.name)} block ${block.height}: ${STATUS_LABEL[status]}"><title>${escape(block.hash)} · ${STATUS_LABEL[status]}</title><rect class="ring" x="${bx - half - 4}" y="${by - 17}" width="${half * 2 + 8}" height="34" rx="7"/><rect class="body" x="${bx - half}" y="${by - 13}" width="${half * 2}" height="26" rx="4"/><text x="${bx}" y="${by}">${block.height}${prime}</text></g>`;
       if (!parents.has(block.hash)) {
-        const text = status === "active" ? `tip ${short(block.hash, 8)}` : `stale ${short(block.hash, 8)} · ${STATUS_LABEL[status].toLowerCase().replace("full ", "")}`;
+        const text = status === "active" ? `tip ${short(block.hash)}` : `stale ${short(block.hash)} · ${STATUS_LABEL[status].toLowerCase().replace("full ", "")}`;
         html += `<text class="tip-label ${status}" x="${bx + half + 12}" y="${by + 4}">${escape(text)}</text>`;
       }
     }
@@ -536,9 +550,8 @@ function renderTrace() {
     } else {
       const start = x(item.time);
       const bar = (from, to, fill) => to > from ? `<rect x="${from}" y="${y - 4}" width="${to - from}" height="8" rx="2" fill="${fill}"/>` : "";
-      if (status === "reorged" && item.reorg) row += bar(start, x(item.reorg), "#16181d") + bar(x(item.reorg), end, "#dde0e4");
-      else if (status === "data" && item.fetched && item.fetched > item.time) row += bar(start, x(item.fetched), "#f3d9a0") + bar(x(item.fetched), end, "#d9920b");
-      else row += bar(start, end, {active: "#16181d", data: "#d9920b", headers: "#f3d9a0", reorged: "#dde0e4", invalid: "#cf222e"}[status] || "#dde0e4");
+      if (status === "data" && item.fetched && item.fetched > item.time) row += bar(start, x(item.fetched), "#f3d9a0") + bar(x(item.fetched), end, "#d9920b");
+      else row += bar(start, end, {active: "#16181d", data: "#d9920b", headers: "#f3d9a0", invalid: "#cf222e"}[status] || "#dde0e4");
       const note = `${item.how} · +${duration((item.time - p.first) * 1000)}`;
       row += `<text class="trace-note" x="${start + (p.links.some(link => link.to === node.id) && !item.local ? 8 : 0)}" y="${y - 10}">${escape(note)}</text>`;
       if (item.reorg) row += `<text class="trace-note" text-anchor="end" x="${x(item.reorg)}" y="${y + 20}">reorged · +${escape(duration((item.reorg - p.first) * 1000))}</text>`;
@@ -568,7 +581,7 @@ function renderTrace() {
   const full = actual + blockSize * headerOnly.length;
   const names = headerOnly.map(node => node.name).join(", ");
   const cost = headerOnly.length && blockSize && full ? `<div class="mode-cost"><p>Headers mode saved ${escape(names)} <b>${bytes(full - actual)}</b> (${Math.round((full - actual) / full * 100)}%)</p><div class="mode-cost-bars" role="img" aria-label="${escape(`${bytes(actual)} received, ${bytes(full)} if ${names} fetched the block`)}"><div class="cost-row"><span>As received</span><div class="cost-track"><div class="cost-bar light" style="width:${(actual / full * 100).toFixed(1)}%"></div></div><span>${bytes(actual)}</span></div><div class="cost-row"><span>If ${escape(names)} fetched it</span><div class="cost-track"><div class="cost-bar" style="width:100%"></div></div><span>${bytes(full)}</span></div></div></div>` : "";
-  setHTML(panel, `<div class="panel-header"><h2>Propagation</h2><span class="panel-meta mono">${escape(short(hash, 8))}</span><div class="panel-stats"><span>Reached <b>${reached} of ${state.nodes.length}</b> nodes</span><span>Last change <b class="mono">+${escape(duration((p.last - p.first) * 1000))}</b></span></div></div><div class="trace-body"><div class="trace-labels"><div class="trace-cell head"></div>${labels}</div><div class="trace-canvas"><svg height="${height}" viewBox="0 0 ${width} ${height}" role="img" aria-label="Arrival of the block at each node over time">${svg}</svg></div><div class="trace-bytes"><div class="trace-cell head"><span>Received</span></div>${sizes}</div></div>${cost}`);
+  setHTML(panel, `<div class="panel-header"><h2>Propagation</h2><span class="panel-meta mono">${escape(short(hash))}</span><div class="panel-stats"><span>Reached <b>${reached} of ${state.nodes.length}</b> nodes</span><span>Last change <b class="mono">+${escape(duration((p.last - p.first) * 1000))}</b></span></div></div><div class="trace-body"><div class="trace-labels"><div class="trace-cell head"></div>${labels}</div><div class="trace-canvas"><svg height="${height}" viewBox="0 0 ${width} ${height}" role="img" aria-label="Arrival of the block at each node over time">${svg}</svg></div><div class="trace-bytes"><div class="trace-cell head"><span>Received</span></div>${sizes}</div></div>${cost}`);
 }
 
 function timeOf(event, full = false) {
@@ -579,10 +592,10 @@ function timeOf(event, full = false) {
 
 function eventDescription(event) {
   const d = event.details || {};
-  if (event.kind === "staletip") return event.evidence === "debug-log" && !d.tip ? event.summary || "staletip observed · payload not captured" : `${d.header_count ?? d.headers?.length ?? "?"} header${(d.header_count ?? 0) === 1 ? "" : "s"} · have_block=${d.have_block} · tip ${short(d.tip, 8)}`;
+  if (event.kind === "staletip") return event.evidence === "debug-log" && !d.tip ? event.summary || "staletip observed · payload not captured" : `${d.header_count ?? d.headers?.length ?? "?"} header${(d.header_count ?? 0) === 1 ? "" : "s"} · have_block=${d.have_block} · tip ${short(d.tip)}`;
   if (event.kind === "feature") return event.evidence === "debug-log" && !isPresent(d.prefers_blocks) ? d.log || event.summary || "Feature message observed" : `${d.feature || "feature"} · ${prefLabel(d.prefers_blocks)}`;
   if (event.kind === "version") return event.evidence === "debug-log" && d.version == null ? d.log || event.summary || "Version message observed" : `Protocol ${d.version ?? "—"}`;
-  if (event.kind === "reorg") return `Left ${d.depth ?? d.hashes?.length ?? "?"} block${(d.depth ?? 0) === 1 ? "" : "s"} for the chain at ${short(d.new_tip, 8)}`;
+  if (event.kind === "reorg") return `Left ${d.depth ?? d.hashes?.length ?? "?"} block${(d.depth ?? 0) === 1 ? "" : "s"} for the chain at ${short(d.new_tip)}`;
   if (!["sent", "recv"].includes(event.direction)) return event.summary || "";
   if (d.hash) return short(d.hash, 19);
   if (d.hashes?.length) return `${d.hashes.length} ${d.hashes.length === 1 ? "hash" : "hashes"} · ${short(d.hashes[0], 14)}`;
@@ -607,7 +620,7 @@ function renderEvents() {
   const filtered = scoped.filter(event => test(event) && (!search || `${JSON.stringify(event)} ${nameOf(event.source)} ${nameOf(event.target)} ${nameOf(event.node)}`.toLowerCase().includes(search)));
   const options = TYPES.map(([key, label, match]) => `<option value="${key}">${label} (${scoped.filter(match).length})</option>`).join("");
   if (typeSelect._options !== options) { typeSelect.innerHTML = options; typeSelect._options = options; typeSelect.value = kind; }
-  setHTML($("#blockFilter"), blockFilter ? `<button class="filter-token" data-action="clear-block" aria-label="Stop filtering by block ${escape(short(blockFilter, 8))}">Block <span class="mono">${escape(short(blockFilter, 8))}</span>${CLOSE}</button>` : "");
+  setHTML($("#blockFilter"), blockFilter ? `<button class="filter-token" data-action="clear-block" aria-label="Stop filtering by block ${escape(short(blockFilter))}">Block <span class="mono">${escape(short(blockFilter))}</span>${CLOSE}</button>` : "");
   $("#eventCount").textContent = filtered.length === source.length ? source.length : `${filtered.length} of ${source.length}`;
   const pending = pausedEvents ? state.events.filter(event => !pausedEvents.some(old => old.id === event.id)).length : 0;
   setHTML($("#pauseButton"), pausedEvents ? `${icon('<path d="M5 3.5L12 8L5 12.5Z"/>')}Resume${pending ? ` · ${pending} new` : ""}` : `${icon('<path d="M5.5 3.5V12.5M10.5 3.5V12.5"/>')}Pause`);
@@ -719,7 +732,7 @@ function forkDialog(parentHash) {
   const blocks = blocksFor(source);
   if (!blocks.length) { toast("The source node needs block data before it can create a fork.", true); return; }
   const defaultParent = parentHash || blocks.find(block => block.active && block.height <= Number(source.height) - 2)?.hash || blocks.at(-1).hash;
-  const blockOptions = (list, chosen) => list.map(block => `<option value="${escape(block.hash)}" ${block.hash === chosen ? "selected" : ""}>Height ${block.height} · ${short(block.hash, 12)}${block.active ? " · active" : " · stale"}</option>`).join("");
+  const blockOptions = (list, chosen) => list.map(block => `<option value="${escape(block.hash)}" ${block.hash === chosen ? "selected" : ""}>Height ${block.height} · ${short(block.hash, 10)}${block.active ? " · active" : " · stale"}</option>`).join("");
   openDialog("Create a fork", `<p>An isolated helper mines a valid branch from your chosen parent, then publishes it only to the selected nodes.</p><label class="field">Source of ancestor blocks<select name="source">${nodeOptions(running, source.id)}</select></label><label class="field">Fork after this block<select name="parent">${blockOptions(blocks, defaultParent)}</select></label><label class="field">New blocks<input type="number" name="length" min="1" max="20" value="1" required><small>Up to 20 blocks. Other nodes learn the branch through their existing peer connections.</small></label><fieldset><legend>Publish initially to</legend><div class="check-list">${running.map(node => `<label class="check-label"><input type="checkbox" name="recipients" value="${escape(node.id)}" ${node.id === source.id ? "checked" : ""}>${escape(node.name)}</label>`).join("")}</div></fieldset><p id="forkWarning" class="notice"></p>`, "Mine & publish fork", values => {
     const recipients = values.getAll("recipients");
     if (!recipients.length) throw new Error("Choose at least one initial recipient.");

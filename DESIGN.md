@@ -135,16 +135,12 @@ components:
     backgroundColor: "{colors.ink}"
     textColor: "{colors.paper}"
     rounded: "{rounded.sm}"
-    height: "24px"
+    height: "26px"
   block-staletip:
     backgroundColor: "{colors.amber}"
     textColor: "{colors.ink}"
     rounded: "{rounded.sm}"
-    height: "24px"
-  block-reorged:
-    backgroundColor: "{colors.gray-block}"
-    rounded: "{rounded.sm}"
-    height: "24px"
+    height: "26px"
 ---
 
 # Design System: staletip
@@ -173,7 +169,7 @@ The palette is neutral and cool, with one blue voice and a reserved state vocabu
 
 ### Secondary (block states)
 - **Stale Amber** (amber): a stale block learned via staletip, its edge, and the packet animation on the network map. It also fills the staletip cost bars. Amber Text is the readable foreground on Amber Wash (staletip tag, offline pill, notice, job bar).
-- **Reorg Gray** (gray-block, gray-line): blocks reorged into staleness and their edges. Gray Line is also the neutral edge between topology nodes.
+- **Neutral Gray** (gray-block, gray-line): the neutral edge between topology nodes and the fallback trace bar. Reorganized blocks have no gray state of their own.
 
 ### Neutral
 - **Ink** (ink): primary text, active-chain blocks and edges, the primary button, toasts, and the selected block ring.
@@ -188,7 +184,7 @@ The palette is neutral and cool, with one blue voice and a reserved state vocabu
 ### Named Rules
 **The One Accent Rule.** Blue #0969DA is only for selection, focus, links and linking. It never decorates and never encodes a block state.
 
-**The Block-Tree Language Rule (user-set, verbatim from PRODUCT.md).** "Active chain solid ink; stale block learned via staletip is a solid orange line and solid orange block; header only is a solid orange line with an orange-striped block; a block reorged into staleness is a solid light-gray line and block; blocks a node does not know are not drawn." The stripe is 45 degrees, #e7b556 on Amber Wash, outlined in Amber. Every swatch, legend, tag and waterfall bar that refers to a block state uses the same mapping.
+**The Block-Tree Language Rule (user-set, verbatim from PRODUCT.md).** "Active chain solid ink; stale block learned via staletip is a solid orange line and solid orange block; header only is a solid orange line with an orange-striped block; a block that was reorganized away is drawn by what the node holds now (orange when it has the full block); blocks a node does not know are not drawn." The stripe is 45 degrees, #e7b556 on Amber Wash, outlined in Amber. Every swatch, legend, tag and waterfall bar that refers to a block state uses the same mapping.
 
 **The Reserved Amber Rule.** Amber and the light grays outside the neutral ramp carry block state and staletip meaning only. They are never used as a generic highlight.
 
@@ -237,7 +233,7 @@ The system is flat. Depth comes from tonal layering (canvas, sidebar, paper) and
 
 ## Shapes
 
-Corners are gently rounded, and the radius steps up with container size: 2px for swatches and waterfall bars, 4px for tags, keycaps and blocks, 6px for buttons, fields, the segmented control and pre blocks, 8px for toasts and network node boxes, 10px for panels, and 12px for the dialog. Pills (badges, the live status) are fully rounded. Blocks are 24px-tall rounded rectangles with a 32px ring (7px radius) that carries the hover, selected, linked and focus states.
+Corners are gently rounded, and the radius steps up with container size: 2px for swatches and waterfall bars, 4px for tags, keycaps and blocks, 6px for buttons, fields, the segmented control and pre blocks, 8px for toasts and network node boxes, 10px for panels, and 12px for the dialog. Pills (badges, the live status) are fully rounded. Blocks are 26px-tall rounded rectangles, at least 52px wide and sized to the longest height label with 12px side padding, with a 34px ring (7px radius) that carries the hover, selected, linked and focus states.
 
 ## Components
 

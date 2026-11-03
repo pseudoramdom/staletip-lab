@@ -37,7 +37,7 @@ Every view is backed by real nodes and real messages: each node is its own Bitco
 - Name: staletip.
 - Should sit naturally beside Bitcoin Core tooling and documentation. No crypto-hype aesthetics.
 - The lab UI follows the developer-tool category standard, executed at full craft rather than an invented visual world (chosen 2026-11-01). Craft bar: Linear, Vercel dashboard, GitHub (inferred; the user did not name products).
-- Block-tree visual language set by the user: active chain solid ink; stale block learned via staletip is a solid orange line and solid orange block; header only is a solid orange line with an orange-striped block; a block reorged into staleness is a solid light-gray line and block; blocks a node does not know are not drawn.
+- Block-tree visual language set by the user: active chain solid ink; stale block learned via staletip is a solid orange line and solid orange block; header only is a solid orange line with an orange-striped block; a block that was reorganized away is drawn by what the node holds now (orange when it has the full block); blocks a node does not know are not drawn.
 
 ## Evidence on Hand
 
