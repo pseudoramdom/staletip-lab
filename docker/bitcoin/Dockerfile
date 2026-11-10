@@ -3,7 +3,7 @@ FROM debian:trixie-slim AS build
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential ca-certificates ccache cmake git libboost-dev python3 \
     && rm -rf /var/lib/apt/lists/*
-ARG BITCOIN_REVISION=073a114dde430cc783564b35cae4e232e8a6aeb4
+ARG BITCOIN_REVISION=404e59c6072c50048d81955c477c7af8a0596553
 ARG BUILD_JOBS=2
 WORKDIR /src
 RUN test "${#BITCOIN_REVISION}" -eq 40 \
@@ -27,7 +27,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends libstdc++6 \
     && groupadd --gid 1000 bitcoin \
     && useradd --uid 1000 --gid bitcoin --no-create-home bitcoin \
     && mkdir /data && chown bitcoin:bitcoin /data
-ARG BITCOIN_REVISION=073a114dde430cc783564b35cae4e232e8a6aeb4
+ARG BITCOIN_REVISION=404e59c6072c50048d81955c477c7af8a0596553
 LABEL org.opencontainers.image.source="https://github.com/pseudoramdom/bitcoin" \
       org.opencontainers.image.revision="$BITCOIN_REVISION"
 COPY --from=build /src/build/bin/bitcoind /src/build/bin/bitcoin-cli /usr/local/bin/

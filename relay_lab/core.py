@@ -805,7 +805,8 @@ class Lab:
         active_tip = {"hash": info["bestblockhash"], "height": info["blocks"], "branchlen": 0, "status": "active"}
         # Header synchronization can lead validation by hundreds of thousands
         # of blocks. Walking from that header tip would block all controls.
-        tips = [active_tip] if self.network.public_peers and info["initialblockdownload"] else node.rpc("getchaintips")
+        tips_available = not (self.network.public_peers and info["initialblockdownload"])
+        tips = node.rpc("getchaintips", 1000) if tips_available else [active_tip]
         cutoff = max(0, info["blocks"] - self.WINDOW + 1)
         records, active, validated, tip_status = {}, set(), set(), {}
         shown_tips = sorted(tips, key=lambda item: (item["status"] != "active", -item["height"]))[:64]
@@ -847,15 +848,27 @@ class Lab:
             record["validity"] = "invalid" if tip_status.get(block) == "invalid" else (
                 "validated" if block in validated else "headers-valid")
         node.records = records
+        local_features = network.get("localfeatures")
+        mode = node.mode
+        if self.observer and local_features is not None:
+            feature = local_features.get("BIP332")
+            preference = feature.get("prefers_blocks") if feature else None
+            mode = ("blocks" if preference else "headers") if isinstance(preference, bool) else (
+                "none" if feature is None else "unknown")
+        stale_tips = []
+        if tips_available and mode in ("headers", "blocks"):
+            stale_tips = node.rpc("getchaintips", 1000, True)
         node.status, node.error = "running", None
-        return {"id": node.id, "name": node.name, "mode": node.mode, "running": True,
+        return {"id": node.id, "name": node.name, "mode": mode, "running": True,
                 "status": "running", "height": info["blocks"], "best_hash": info["bestblockhash"],
                 "ibd": info["initialblockdownload"], "mining": copy.deepcopy(node.mining),
                 "headers": info.get("headers", info["blocks"]),
                 "verification_progress": info.get("verificationprogress", 0),
                 "size_on_disk": info.get("size_on_disk", 0), "pruned": info.get("pruned", False),
                 "public_network": node.public_network, "configured_peers": list(node.configured_peers),
-                "peers": peers, "staletips": network.get("staletips", []), "tips": tips,
+                "peers": peers, "localfeatures": local_features,
+                "staletips": stale_tips,
+                "tips": tips, "tips_available": tips_available,
                 "blocks": records, "error": None, "p2p_port": node.p2p_port,
                 "rpc_port": node.rpc_port, "datadir": None if self.observer else str(node.datadir)}
 
@@ -891,8 +904,10 @@ class Lab:
                         history.append(session)
                         del history[:-20]
                     live[key] = session
-                    self._negotiation.setdefault(key, {"advertised": None, "received": None, "version": False,
-                                                       "verack": False, "sent_version": False, "sent_verack": False})
+                    negotiation = self._negotiation.setdefault(key, {"advertised": None, "received": None, "version": False,
+                                                                    "verack": False, "sent_version": False, "sent_verack": False})
+                    negotiation["local_features"] = state.get("localfeatures")
+                    negotiation["peer_features"] = peer.get("features")
         if self.network.public_peers:
             recent = sorted(self._peer_sessions, key=lambda key: self._peer_sessions[key]["since"], reverse=True)[:256]
             keep = set(live) | set(recent)

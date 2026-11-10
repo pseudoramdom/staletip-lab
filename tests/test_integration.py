@@ -105,7 +105,7 @@ class RegtestWorkflowTests(unittest.TestCase):
         def onward_headers(snapshot):
             for node_id in (middle, downstream):
                 node = self.node(snapshot, node_id)
-                if not any(tip["hash"] == stale_tip and tip["have_block"] is False for tip in node.get("staletips", [])):
+                if not any(tip["hash"] == stale_tip for tip in node.get("staletips", [])):
                     return False
                 if not all(h in node.get("blocks", {}) and node["blocks"][h].get("have_data") is False for h in hashes):
                     return False
@@ -124,7 +124,7 @@ class RegtestWorkflowTests(unittest.TestCase):
                 "both stale blocks downloaded by %s after blocks-mode renegotiation" % node_id,
             )
             self.assertEqual(self.node(state, node_id)["best_hash"], winner)
-            self.assertTrue(any(tip["hash"] == stale_tip and tip["have_block"] is True
+            self.assertTrue(any(tip["hash"] == stale_tip
                                 for tip in self.node(state, node_id)["staletips"]))
 
         self.action("miner", id=source, enabled=True, interval=2)

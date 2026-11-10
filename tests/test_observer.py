@@ -26,14 +26,19 @@ class ExistingNode(ThreadingHTTPServer):
         self.calls = []
         self.uptime = 100
         self.tip = "11" * 32
+        self.local_features = {}
+        self.peers = []
 
-    def result(self, method):
+    def result(self, method, params):
+        if method == "getchaintips" and params == [1000, True]:
+            assert "BIP332" in (self.local_features or {})
+            return []
         return {
             "getblockchaininfo": {"chain": self.chain, "blocks": 0, "headers": 0,
                                    "bestblockhash": self.tip, "initialblockdownload": False,
                                    "verificationprogress": 1, "pruned": False},
-            "getnetworkinfo": {"staletips": [], "connections": 0},
-            "getpeerinfo": [],
+            "getnetworkinfo": {"localfeatures": self.local_features, "connections": len(self.peers)},
+            "getpeerinfo": self.peers,
             "getchaintips": [{"hash": self.tip, "height": 0, "branchlen": 0, "status": "active"}],
             "getblockheader": {"hash": self.tip, "height": 0, "time": 1},
             "getblock": {"hash": self.tip, "size": 285},
@@ -50,7 +55,7 @@ class RPCHandler(BaseHTTPRequestHandler):
         self.server.calls.append(value["method"])
         expected = "Basic " + base64.b64encode(self.server.cookie.encode()).decode()
         status = 503 if not self.server.available else 401 if self.headers.get("Authorization") != expected else 200
-        data = json.dumps({"result": self.server.result(value["method"]), "error": None, "id": value.get("id")}).encode()
+        data = json.dumps({"result": self.server.result(value["method"], value["params"]), "error": None, "id": value.get("id")}).encode()
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(data)))
@@ -117,6 +122,33 @@ class ObserverTests(unittest.TestCase):
                 node = lab._nodes["n1"]
                 self.assertEqual(node.rpc("getblockchaininfo")["chain"], network.name)
         self.assertNotIn("stop", self.server.calls)
+
+    def test_rpc_features_are_available_without_handshake_logs(self):
+        self.server.local_features = {"BIP332": {"prefers_blocks": False}}
+        self.server.peers = [{"id": 41, "addr": "192.0.2.1:48333", "inbound": False,
+                              "conntime": 1, "version": 70017,
+                              "features": {"BIP332": {"prefers_blocks": True}}}]
+        lab = self.lab()
+        for local, remote, mode in ((False, True, "headers"), (True, False, "blocks"), (None, None, "none")):
+            with self.subTest(mode=mode):
+                local_features = {"BIP332": {"prefers_blocks": local}} if local is not None else {}
+                peer_features = {"BIP332": {"prefers_blocks": remote}} if remote is not None else {}
+                self.server.local_features = local_features
+                self.server.peers[0]["features"] = peer_features
+                state = self.wait_for(lab, lambda s: s["links"] and s["nodes"][0]["mode"] == mode
+                                      and s["links"][0]["negotiation"]["n1"]["peer_features"] == peer_features)
+                negotiation = state["links"][0]["negotiation"]["n1"]
+                self.assertEqual(negotiation["local_features"], local_features)
+                self.assertEqual(negotiation["peer_features"], peer_features)
+                self.assertIsNone(negotiation["advertised"])
+                self.assertIsNone(negotiation["received"])
+                self.assertFalse(negotiation["version"])
+                self.assertFalse(negotiation["verack"])
+                self.assertFalse(any(event["kind"] == "feature" for event in state["events"]))
+        self.server.local_features = None
+        self.server.peers[0].pop("features")
+        state = self.wait_for(lab, lambda s: s["nodes"][0]["mode"] == "unknown")
+        self.assertIsNone(state["links"][0]["negotiation"]["n1"]["peer_features"])
 
     def test_rejects_mutations_at_action_and_rpc_boundaries(self):
         lab = self.lab()

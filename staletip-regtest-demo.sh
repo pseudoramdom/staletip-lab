@@ -110,7 +110,7 @@ print_commands() {
     printf '\nCommands for inspecting each node (usable from Bash or fish):\n'
     for node in 0 1 2; do
         printf '\n  # %s, mode=%s\n' "${NAMES[$node]}" "${MODES[$node]}"
-        printf '  %q -regtest -datadir=%q -rpcport=%s getnetworkinfo\n' \
+        printf '  %q -regtest -datadir=%q -rpcport=%s getchaintips 1000 true\n' \
             "$CLI" "$RUN_DIR/node$node" "$((PORT_BASE + 10 + node))"
         printf '  %q -regtest -datadir=%q -rpcport=%s stop\n' \
             "$CLI" "$RUN_DIR/node$node" "$((PORT_BASE + 10 + node))"
@@ -202,15 +202,22 @@ copy_block() {
 }
 
 stale_entry() {
-    rpc "$1" getnetworkinfo | jq -e --arg hash "$STALE" --arg fork "$COMMON" --argjson have "$2" \
-        'any(.staletips[]; .hash == $hash and .fork_point == $fork and .height == 3 and .fork_length == 2 and .have_block == $have)'
+    local result
+    rpc "$1" getchaintips 1000 true | jq -e --arg hash "$STALE" --arg fork "$COMMON" \
+        'any(.[]; .hash == $hash and .fork_point == $fork and .height == 3 and .branchlen == 2)' || return 1
+    if result=$(rpc "$1" getblock "$STALE" 0 2>&1); then
+        [[ "$2" == true ]]
+    else
+        [[ "$2" == false && "$result" == *"not fully downloaded"* ]]
+    fi
 }
 
 show_tips() {
     local node
     for node in 0 1 2; do
-        rpc "$node" getnetworkinfo | jq --arg node "${NAMES[$node]}" --arg mode "${MODES[$node]}" \
-            '{node: $node, mode: $mode, staletips: .staletips}'
+        rpc "$node" getchaintips 1000 true | jq --arg node "${NAMES[$node]}" --arg mode "${MODES[$node]}" \
+            '{node: $node, mode: $mode, relayable_stale_tips: .}'
+        rpc "$node" getnetworkinfo | jq '{localfeatures}'
     done
 }
 
@@ -294,12 +301,12 @@ done
 for node in 0 1 2; do wait_for "${NAMES[$node]} is on the winning chain and outside IBD" on_winning_chain "$node"; done
 wait_for "A locally tracks its reorged-out tip with block data" stale_entry 0 true
 for node in 1 2; do
-    rpc "$node" getnetworkinfo | jq -e '.staletips | length == 0' >/dev/null
+    rpc "$node" getchaintips 1000 true | jq -e 'length == 0' >/dev/null
     if result=$(rpc "$node" getblockheader "$STALE" 2>&1); then
         die "${NAMES[$node]} already knows the stale header before P2P relay."
     fi
     [[ "$result" == *"Block not found"* ]] || die "Unexpected getblockheader failure: $result"
-    log "PASS: ${NAMES[$node]} has an empty stale-tip cache and does not know the stale header."
+    log "PASS: ${NAMES[$node]} has no relayable stale tips and does not know the stale header."
 done
 show_tips
 
@@ -310,8 +317,8 @@ log "Connecting C to B, then B to A. A and C never connect."
 rpc 2 addnode "127.0.0.1:$((PORT_BASE + 1))" onetry
 rpc 1 addnode "127.0.0.1:$PORT_BASE" onetry
 wait_for "the peer graph is exactly A -- B -- C" linear_topology
-wait_for "B learns the stale tip from A, with have_block=false" stale_entry 1 false
-wait_for "C learns the stale tip through B, with have_block=false" stale_entry 2 false
+wait_for "B learns the stale tip from A, without block data" stale_entry 1 false
+wait_for "C learns the stale tip through B, without block data" stale_entry 2 false
 expect_headers_only 1
 expect_headers_only 2
 show_tips
@@ -341,7 +348,7 @@ phase "6/6: Check the winning chain and show relay evidence"
 for node in 0 1 2; do
     wait_for "${NAMES[$node]} still has the original winning tip at height 4" on_winning_chain "$node"
     printf '\nPeers for %s:\n' "${NAMES[$node]}"
-    rpc "$node" getpeerinfo | jq '[.[] | {id, addr, inbound, connection_type, version}]'
+    rpc "$node" getpeerinfo | jq '[.[] | {id, addr, inbound, connection_type, version, features}]'
     printf '\nRecent stale-tip messages for %s:\n' "${NAMES[$node]}"
     grep -E 'staletip|stale-tip' "$RUN_DIR/node$node/regtest/debug.log" | tail -n 16 || true
 done

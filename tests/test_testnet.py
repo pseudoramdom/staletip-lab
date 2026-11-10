@@ -101,6 +101,58 @@ class TestnetPolicyTests(LabAssertions, unittest.TestCase):
         self.assertNotEqual(state["session"]["observation_id"], original["observation_id"])
         self.assertEqual(state["events"], [])
 
+    def test_chain_tip_eligibility_is_separate_from_block_availability(self):
+        from relay_lab.core import Node, RPCError
+
+        node = Node("n1", "A", "blocks", self.run_dir / "node", self.lab.binary,
+                    Testnet4(), 18400, 18401)
+        tips = [{"hash": "block1000", "height": 1000, "branchlen": 0, "status": "active"}]
+        for name, status in (("header", "headers-only"), ("pruned", "valid-fork"),
+                             ("ineligible", "valid-headers"), ("unknown", "headers-only")):
+            tips.append({"hash": name + "999", "height": 999, "branchlen": 1,
+                         "fork_point": "block998", "status": status})
+        # A known child makes old800 disappear from the ordinary chain tips.
+        old = {"hash": "old800", "height": 800, "branchlen": 1,
+               "fork_point": "block799", "status": "valid-fork"}
+        tips.append(dict(old, hash="child801", height=801, branchlen=2, status="invalid"))
+        relayable = [tips[1], tips[2], old]
+
+        def rpc(method, *params):
+            if method == "getblockchaininfo":
+                return {"blocks": 1000, "headers": 1000, "bestblockhash": "block1000",
+                        "initialblockdownload": False, "pruned": True}
+            if method == "getnetworkinfo":
+                return {"localfeatures": {"BIP332": {"prefers_blocks": True}}}
+            if method == "getpeerinfo":
+                return []
+            if method == "getchaintips":
+                if params == (1000, True):
+                    return relayable
+                self.assertEqual(params, (1000,))
+                return tips
+            if method == "getblockheader":
+                block = params[0]
+                height = int(block.lstrip("abcdefghijklmnopqrstuvwxyz"))
+                return {"height": height, "previousblockhash": "block%d" % (height - 1), "time": height}
+            if method == "getblock":
+                if params[0] in ("header999", "pruned999", "unknown999"):
+                    raise RPCError("Block data unavailable", -1)
+                return {"size": 285}
+            self.fail("Unexpected RPC: " + method)
+
+        node.rpc = rpc
+        state = self.lab._collect(node)
+        self.assertTrue(state["tips_available"])
+        self.assertEqual({tip["hash"] for tip in state["staletips"]}, {"header999", "pruned999", "old800"})
+        self.assertEqual(state["localfeatures"], {"BIP332": {"prefers_blocks": True}})
+        self.assertFalse(state["blocks"]["header999"]["have_data"])
+        self.assertFalse(state["blocks"]["pruned999"]["have_data"])
+        self.assertEqual(state["blocks"]["pruned999"]["validity"], "validated")
+        self.assertTrue(state["blocks"]["ineligible999"]["have_data"])
+        self.assertNotIn("old800", {tip["hash"] for tip in state["tips"]})
+        self.assertNotIn("old800", state["blocks"])
+        self.assertTrue(all("have_block" not in tip for tip in state["staletips"]))
+
     def test_initial_sync_bounds_graph_to_validated_window(self):
         from relay_lab.core import Node
 
@@ -115,7 +167,7 @@ class TestnetPolicyTests(LabAssertions, unittest.TestCase):
                         "initialblockdownload": True, "verificationprogress": 0.001,
                         "size_on_disk": 123456, "pruned": False}
             if method == "getnetworkinfo":
-                return {"staletips": []}
+                return {"localfeatures": {}}
             if method == "getpeerinfo":
                 return []
             if method == "getblockheader":
@@ -125,6 +177,7 @@ class TestnetPolicyTests(LabAssertions, unittest.TestCase):
 
         node.rpc = rpc
         state = self.lab._collect(node)
+        self.assertFalse(state["tips_available"])
         self.assertEqual(state["headers"], 1_000_000)
         self.assertEqual(state["verification_progress"], 0.001)
         self.assertEqual(len(state["blocks"]), self.lab.WINDOW)

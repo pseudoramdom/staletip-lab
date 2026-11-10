@@ -199,21 +199,30 @@ function renderNodes() {
   }
 }
 
-function staleTips() {
-  const active = new Set(), children = new Set(state.blocks.map(block => block.parent));
-  for (const node of state.nodes) for (const [hash, record] of Object.entries(node.blocks || {})) if (record.active) active.add(hash);
-  return state.blocks.filter(block => !active.has(block.hash) && !children.has(block.hash));
+function featurePreference(features) {
+  const value = features?.BIP332?.prefers_blocks;
+  return isPresent(value) ? value : null;
+}
+
+function localPreference(negotiation) {
+  return negotiation.local_features != null ? featurePreference(negotiation.local_features) : negotiation.advertised;
+}
+
+function peerPreference(negotiation) {
+  return negotiation.peer_features != null ? featurePreference(negotiation.peer_features) : negotiation.received;
 }
 
 function negotiated(link) {
   const values = Object.values(link.negotiation || {});
-  return values.length > 1 && values.every(value => isPresent(value.advertised) || isPresent(value.received));
+  return link.connected && values.length > 0 && values.every(value => isPresent(localPreference(value)) && isPresent(peerPreference(value)));
 }
 
 function renderSummary() {
   const running = state.nodes.filter(node => node.running);
   const best = running.reduce((top, node) => !top || Number(node.height) > Number(top.height) ? node : top, null);
-  const stale = staleTips();
+  const reporting = running.filter(node => node.tips_available && node.mode !== "unknown");
+  const stale = reporting.flatMap(node => node.staletips);
+  const count = new Set(stale.map(tip => tip.hash)).size;
   const highest = stale.reduce((top, block) => Math.max(top, block.height), -1);
   const messages = state.events.length;
   const links = state.links.filter(link => !externalPeer(link.a) && !externalPeer(link.b));
@@ -231,7 +240,7 @@ function renderSummary() {
   const agreed = links.filter(negotiated).length;
   const note = links.length ? `BIP332 negotiated on ${agreed === links.length ? links.length === 1 ? "the link" : links.length === 2 ? "both links" : `all ${links.length} links` : `${agreed} of ${links.length} links`}` : "No connections between lab nodes";
   const external = state.external_peers.length ? ` · ${state.external_peers.length} external peer${state.external_peers.length === 1 ? "" : "s"}` : "";
-  setHTML($("#summary"), `<span>Tip <b>${best ? Number(best.height ?? 0) : "—"}</b>${best ? ` · <span class="mono">${escape(short(best.best_hash))}</span>` : ""}</span><span class="${stale.length ? "amber" : ""}" title="${stale.length ? `Highest at height ${highest}` : ""}"><b>${stale.length}</b> stale tip${stale.length === 1 ? "" : "s"}</span><span><b>${messages}</b> ${messages === 1 ? "message" : "messages"}</span>${state.nodes.length ? `<span class="topology">${topology || `<span class="topology-node">${escape(state.nodes[0].name)}</span>`}<span>&nbsp;· ${escape(note + external)}</span></span>` : ""}`);
+  setHTML($("#summary"), `<span>Tip <b>${best ? Number(best.height ?? 0) : "—"}</b>${best ? ` · <span class="mono">${escape(short(best.best_hash))}</span>` : ""}</span><span class="${stale.length ? "amber" : ""}" title="${stale.length ? `Highest at height ${highest}` : ""}"><b>${reporting.length ? count : "—"}</b> relayable stale tip${count === 1 ? "" : "s"}</span><span><b>${messages}</b> ${messages === 1 ? "message" : "messages"}</span>${state.nodes.length ? `<span class="topology">${topology || `<span class="topology-node">${escape(state.nodes[0].name)}</span>`}<span>&nbsp;· ${escape(note + external)}</span></span>` : ""}`);
 }
 
 function networkPositions() {
@@ -261,14 +270,14 @@ function renderNetwork() {
     const a = positions[link.a], b = positions[link.b];
     if (!a || !b) return "";
     const external = externalPeer(link.a) || externalPeer(link.b);
-    const received = Object.values(link.negotiation || {}).some(value => isPresent(value.received));
-    const observed = isPresent(link.negotiation?.[link.a]?.advertised) && isPresent(link.negotiation?.[link.b]?.advertised);
+    const received = Object.values(link.negotiation || {}).some(value => isPresent(peerPreference(value)));
+    const observed = negotiated(link);
     return `<g data-link="${escape(link.id)}" role="button" tabindex="0" aria-label="Inspect ${escape(nameOf(link.a))} to ${escape(nameOf(link.b))}"><path class="link-line ${external ? "external-link" : ""} ${link.connected ? "" : "disconnected"} ${selected.type === "link" && selected.id === link.id ? "selected" : ""}" d="M${a.x},${a.y} L${b.x},${b.y}"/><path class="link-hit" d="M${a.x},${a.y} L${b.x},${b.y}"/>${external ? "" : `<text class="link-label" text-anchor="middle" x="${(a.x + b.x) / 2}" y="${(a.y + b.y) / 2 - 15}">${link.connected ? observed ? "BIP332 ↔" : received ? "BIP332 observed" : "Connected" : "Disconnected"}</text>`}</g>`;
   }).join("");
   const externalNodes = state.external_peers.map(peer => {
     const {x, y} = positions[peer.id];
     const link = state.links.find(item => item.a === peer.id || item.b === peer.id);
-    const advertised = isPresent((link?.negotiation?.[peer.node] || {}).received);
+    const advertised = isPresent(peerPreference(link?.negotiation?.[peer.node] || {}));
     return `<g class="node-visual external-peer ${selected.type === "peer" && selected.id === peer.id ? "selected" : ""}" data-peer="${escape(peer.id)}" role="button" tabindex="0" aria-label="Inspect external peer ${escape(peer.address)}"><title>${escape(peer.address)} · ${peer.inbound ? "Inbound" : "Outbound"} · ${escape(nameOf(peer.node))}${advertised ? " · BIP332 advertised" : ""}</title><rect class="node-box" x="${x - 56}" y="${y - 15}" width="112" height="30" rx="6"/>${advertised ? `<circle cx="${x - 45}" cy="${y}" r="2.5" fill="#d9920b"/>` : ""}<text class="node-label peer-label" x="${x - 38}" y="${y}">${escape(peerLabel(peer.address))}</text></g>`;
   }).join("");
   const nodes = state.nodes.map(node => {
@@ -291,6 +300,10 @@ const sectionHead = (title, action = "") => `<div class="section-head"><h3>${esc
 const copyButton = value => `<button class="link-button" data-action="copy-hash" data-id="${escape(value)}">${COPY}Copy</button>`;
 
 function receivedPreference(negotiation, peer) {
+  if (negotiation.peer_features != null) {
+    const preference = featurePreference(negotiation.peer_features);
+    return isPresent(preference) ? prefLabel(preference) : "Not reported by peer";
+  }
   if (isPresent(negotiation.received)) return prefLabel(negotiation.received);
   if (peer?.version && peer.version < 70017) return "Protocol predates BIP434";
   return negotiation.version && negotiation.verack ? "Not advertised in observed handshake" : "Not yet observed";
@@ -299,7 +312,7 @@ function receivedPreference(negotiation, peer) {
 function externalDetails(peer) {
   const link = state.links.find(item => item.a === peer.id || item.b === peer.id);
   const negotiation = link?.negotiation?.[peer.node] || {};
-  return `${metric("Observed at", escape(nameOf(peer.node)))}${metric("Connection", peer.inbound ? "Inbound" : "Outbound")}${metric("Protocol", escape(peer.version || "Not reported"))}${metric("Software", escape(peer.subver || "Not reported"))}${metric("BIP332 received", escape(receivedPreference(negotiation, peer)))}<p class="help-text">This is an external peer. Its complete block tree and onward connections are not visible from this node.</p><div class="detail-actions"><button class="button full" data-action="peers" data-id="${escape(peer.node)}">Connection settings for ${escape(nameOf(peer.node))}</button></div>`;
+  return `${metric("Observed at", escape(nameOf(peer.node)))}${metric("Connection", peer.inbound ? "Inbound" : "Outbound")}${metric("Protocol", escape(peer.version || "Not reported"))}${metric("Software", escape(peer.subver || "Not reported"))}${metric(negotiation.peer_features != null ? "Peer BIP332 (RPC)" : "BIP332 received", escape(receivedPreference(negotiation, peer)))}<p class="help-text">This is an external peer. Its complete block tree and onward connections are not visible from this node.</p><div class="detail-actions"><button class="button full" data-action="peers" data-id="${escape(peer.node)}">Connection settings for ${escape(nameOf(peer.node))}</button></div>`;
 }
 
 function blockStatus(node, hash) {
@@ -406,10 +419,10 @@ function renderInspector() {
         if (!peer) continue;
         const negotiation = link.negotiation?.[id] || {};
         const remote = externalPeer(id === link.a ? link.b : link.a);
-        html += `<div class="handshake-node"><h3>${escape(nameOf(id))}</h3><div class="handshake-steps"><span class="${negotiation.version ? "seen" : ""}">version</span><span class="${isPresent(negotiation.advertised) || isPresent(negotiation.received) ? "seen" : ""}">BIP332</span><span class="${negotiation.verack ? "seen" : ""}">verack</span></div>${metric("Configured mode", escape(modeLabel(peer.mode)))}${metric("Local preference observed", escape(prefLabel(negotiation.advertised)))}${metric("Peer preference received", escape(receivedPreference(negotiation, remote)))}</div>`;
+        html += `<div class="handshake-node"><h3>${escape(nameOf(id))}</h3><div class="handshake-steps"><span class="${negotiation.version ? "seen" : ""}">version</span><span class="${isPresent(localPreference(negotiation)) || isPresent(peerPreference(negotiation)) ? "seen" : ""}">BIP332</span><span class="${negotiation.verack ? "seen" : ""}">verack</span></div>${metric(negotiation.local_features != null ? "Local feature (RPC)" : "Configured mode", escape(negotiation.local_features != null ? isPresent(localPreference(negotiation)) ? prefLabel(localPreference(negotiation)) : "Not advertised" : modeLabel(peer.mode)))}${metric("Sent preference captured", escape(prefLabel(negotiation.advertised)))}${metric(negotiation.peer_features != null ? "Peer feature (RPC)" : "Peer preference received", escape(receivedPreference(negotiation, remote)))}</div>`;
       }
       const remote = externalPeer(link.a) || externalPeer(link.b);
-      html += `<p class="help-text">${monitoring() ? "Core logs report received feature preferences. Outgoing feature payloads are not decoded, so a configured mode is not proof of an observed advertisement." : "These are captured messages on this connection. Configuration and advertised preference are shown separately."}</p>${remote ? externalDetails(remote) : `<div class="detail-actions"><button class="button full ${link.connected ? "danger" : ""}" data-connection="${escape(link.id)}">${link.connected ? "Disconnect" : "Reconnect"}</button></div>`}</div>`;
+      html += `<p class="help-text">RPC reports local feature support and the peer’s advertised preference, including handshakes that predate observation. Handshake steps and sent preferences require captured messages or logs; RPC snapshots do not create timeline events.</p>${remote ? externalDetails(remote) : `<div class="detail-actions"><button class="button full ${link.connected ? "danger" : ""}" data-connection="${escape(link.id)}">${link.connected ? "Disconnect" : "Reconnect"}</button></div>`}</div>`;
     }
   } else if (selected.type === "block") {
     html = blockInspector();
@@ -429,7 +442,7 @@ function renderInspector() {
     const sync = monitoring() ? `<div class="sync-status">${metric("Chain state", node.running ? node.ibd ? pill("Initial synchronization", "amber") : pill("Synchronized", "green") : pill(observing() ? "RPC unavailable" : "Stopped"))}<progress max="1" value="${Math.min(1, Math.max(0, Number(node.verification_progress) || 0))}" aria-label="Chain verification progress"></progress>${metric("Verification progress", `<span class="mono">${percent(node.verification_progress)}</span>`)}${metric("Headers known", `<span class="mono">${escape(node.headers ?? "—")}</span>`)}${metric("Block storage", `${storageSize(node.size_on_disk)}${node.pruned ? " · pruned" : ""}`)}</div>` : "";
     const status = node.running ? pill(monitoring() ? `Running on ${networkName()}` : "Running", "green") : pill(observing() ? "RPC unavailable" : "Stopped · data retained");
     const stale = node.staletips?.length || 0;
-    html = detailHead(`Node ${node.name}`, {end: status}) + `<div class="detail-body">${metric("Stale-tip mode", observing() ? escape(modeLabel(node.mode)) : `<button class="inline-select" data-action="mode" data-id="${escape(node.id)}" aria-label="Change stale-tip mode">${escape(modeLabel(node.mode))}${CHEVRON}</button>`)}${metric("Height", `<span class="mono">${escape(node.height ?? "—")}</span>`)}${sync}${metric("Peers", `<span class="mono">${peers}</span>`)}${metric("Stale tips known", `<span class="mono" ${stale ? 'style="color:var(--amber-text)"' : ""}>${stale}</span>`)}${supports("mining") ? metric("Miner", node.mining?.enabled ? `<span class="running-miner">Every ${Number(node.mining.interval)}s</span>` : "Paused") : ""}${metric("P2P / RPC ports", `<span class="mono">${escape(node.p2p_port ?? "—")} / ${escape(node.rpc_port ?? "—")}</span>`)}${sectionHead("Tip hash", node.best_hash ? copyButton(node.best_hash) : "")}<div class="hash-box">${escape(node.best_hash || "Waiting for chain state…")}</div>${node.error ? `<p class="form-error">${escape(node.error)}</p>` : ""}${monitoring() && node.ibd ? '<p class="help-text">Stale-tip announcements are paused during initial synchronization.</p>' : ""}<div class="detail-actions">${supports("mining") ? `<button class="button" data-action="miner" data-id="${escape(node.id)}">Miner settings</button>` : ""}${supports("public_peers") ? `<button class="button" data-action="peers" data-id="${escape(node.id)}">Connection settings</button>` : ""}<button class="button ${node.running ? "danger" : ""}" data-lifecycle="${escape(node.id)}">${node.running ? "Stop node" : "Start node"}</button></div>${observing() ? '<p class="help-text">Read-only observer. Node settings and lifecycle are managed on the host.</p>' : '<p class="help-text">Changing mode restarts the node and reconnects its peers.</p>'}</div>`;
+    html = detailHead(`Node ${node.name}`, {end: status}) + `<div class="detail-body">${metric("Stale-tip mode", observing() ? escape(modeLabel(node.mode)) : `<button class="inline-select" data-action="mode" data-id="${escape(node.id)}" aria-label="Change stale-tip mode">${escape(modeLabel(node.mode))}${CHEVRON}</button>`)}${metric("Height", `<span class="mono">${escape(node.height ?? "—")}</span>`)}${sync}${metric("Peers", `<span class="mono">${peers}</span>`)}${metric("Relayable stale tips", `<span class="mono" ${stale ? 'style="color:var(--amber-text)"' : ""}>${node.tips_available === false ? "Not queried during IBD" : node.mode === "unknown" ? "Unknown" : stale}</span>`)}${supports("mining") ? metric("Miner", node.mining?.enabled ? `<span class="running-miner">Every ${Number(node.mining.interval)}s</span>` : "Paused") : ""}${metric("P2P / RPC ports", `<span class="mono">${escape(node.p2p_port ?? "—")} / ${escape(node.rpc_port ?? "—")}</span>`)}${sectionHead("Tip hash", node.best_hash ? copyButton(node.best_hash) : "")}<div class="hash-box">${escape(node.best_hash || "Waiting for chain state…")}</div>${node.error ? `<p class="form-error">${escape(node.error)}</p>` : ""}${monitoring() && node.ibd ? '<p class="help-text">Stale-tip announcements are paused during initial synchronization.</p>' : ""}<div class="detail-actions">${supports("mining") ? `<button class="button" data-action="miner" data-id="${escape(node.id)}">Miner settings</button>` : ""}${supports("public_peers") ? `<button class="button" data-action="peers" data-id="${escape(node.id)}">Connection settings</button>` : ""}<button class="button ${node.running ? "danger" : ""}" data-lifecycle="${escape(node.id)}">${node.running ? "Stop node" : "Start node"}</button></div>${observing() ? '<p class="help-text">Read-only observer. Node settings and lifecycle are managed on the host.</p>' : '<p class="help-text">Changing mode restarts the node and reconnects its peers.</p>'}</div>`;
   }
   setHTML($("#inspector"), html);
 }
@@ -630,7 +643,7 @@ function renderEvents() {
     const route = event.source && event.target ? `${escape(nameOf(event.source))}${ARROW}${escape(nameOf(event.target))}` : escape(nameOf(event.node));
     const prose = !["sent", "recv"].includes(event.direction);
     return `<button class="event-row ${selected.type === "event" && String(selected.id) === String(event.id) ? "selected" : ""}" data-event="${escape(event.id)}"><span class="event-time">${escape(timeOf(event))}</span><span class="event-route">${route}<span class="event-observation">${escape(prose ? event.kind === "reorg" ? "chain" : "lab" : observationOf(event))}</span></span><span class="tag ${kindClass(event.kind)}">${escape(event.kind)}</span><span class="event-description ${prose ? "prose" : ""}">${escape(eventDescription(event))}</span><span class="event-size">${event.size == null || prose ? "–" : bytes(Number(event.size))}</span></button>`;
-  }).join("") : `<p class="empty-message">No matching messages yet.<br>${blockFilter ? "Nothing captured mentions this block." : observing() ? "Message events require an accessible network debug log. Earlier negotiation may not have been observed." : monitoring() ? "Connect to peers to observe network activity. BIP332 requires support from the peer." : "Connect nodes or create a fork to watch the exchange."}</p>`);
+  }).join("") : `<p class="empty-message">No matching messages yet.<br>${blockFilter ? "Nothing captured mentions this block." : observing() ? "Message events require an accessible network debug log. Current feature support is available in the connection inspector through RPC." : monitoring() ? "Connect to peers to observe network activity. BIP332 requires support from the peer." : "Connect nodes or create a fork to watch the exchange."}</p>`);
   const limit = $("#timelineLimit");
   limit.hidden = filtered.length <= 150;
   limit.textContent = `Showing the latest 150 of ${filtered.length} matching messages. Narrow the filters or export the session for all retained events.`;

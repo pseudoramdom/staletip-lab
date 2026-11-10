@@ -20,7 +20,9 @@ From the repository root, in Bash or fish:
 
 Open **http://127.0.0.1:8765**. Both executables must come from a build with
 `-staletips` and BIP434 negotiation support; a standard release without the
-stale-tip implementation cannot run the experiments.
+stale-tip implementation cannot run the experiments. Use a current branch build
+that exposes `getchaintips` with `staletips_only` and `max_depth`,
+`getnetworkinfo.localfeatures`, and `getpeerinfo[].features`.
 
 Binary selection uses `--bin-dir` first, then `BITCOIN_BIN_DIR`, then the directory
 containing `bitcoind` on `PATH`. That directory must also contain `bitcoin-cli`.
@@ -82,7 +84,7 @@ the public testnet4 blockchain. No wallet or test coins are required.
   recent stale branches for compatible peers to announce.
 - **Testnet4 relay policy** excludes minimum-difficulty stale tips and may impose
   a higher difficulty cutoff. A known fork can appear in the block tree without
-  qualifying for the stale-tip cache or relay, even after both nodes finish sync.
+  qualifying for relay, even after both nodes finish sync.
 
 Testnet4 stores its persistent profile at `runs/testnet4/`. On restart, the lab
 restores the same node definitions, stale-tip modes, peer settings, ports, local
@@ -93,9 +95,11 @@ time. To use a separate profile, pass a different `--data-dir` parent.
 Testnet4 uses Core's live network debug log for message observations rather than
 capturing every block payload during sync. Events identify the observed message
 type, direction, time, and peer. A logged BIP332 support announcement supplies the
-peer's advertised preference; an unobserved outgoing preference is not inferred
-from the configured mode. These events are labeled as log observations and do
-not contain full P2P payloads. Regtest retains its decoded raw message captures.
+peer's advertised preference. RPC also reports local feature support and peer
+preferences, including connections established before monitoring began. A local
+feature reported by RPC does not create a sent-message observation. Log events
+are labeled as observations and do not contain full P2P payloads. Regtest retains
+its decoded raw message captures.
 
 The monitor reads logs incrementally with a bounded amount of work per poll.
 Debug logs rotate at approximately 16 MiB and retain one previous file, for about
@@ -135,12 +139,20 @@ JSON configuration. Optional `log_file` enables message observations.
 `p2p_address` is an optional endpoint used to match connections between observed
 nodes; set it to the address peers actually report for that node.
 
-RPC supplies chain state, block trees, peer state, and the stale-tip cache.
-Message arrivals and feature negotiation require network debug logging on the
-node and read access to its log. The observer does not turn logging on for you.
-If you omit the log, RPC monitoring still works. Negotiation that happened before
-observation began may remain unobserved; no negotiation state is inferred from
-the configured stale-tip mode. Missing or unreadable logs do not imply missing
+RPC supplies chain state, block trees, relay eligibility, and current feature
+support. `getchaintips 1000` supplies the block tree's recent tips.
+For nodes with stale-tip tracking enabled, `getchaintips 1000 true` supplies
+the relayable stale tips counted by the lab. The lab checks block availability separately
+with `getblock`; chain-tip status alone does not prove that a pruned node still
+has the data. During public-network IBD, branch queries are deferred and the
+interface marks the relay-eligible count as not queried.
+
+`getnetworkinfo.localfeatures` reports the local feature preference, while
+`getpeerinfo[].features` reports each peer's advertised preference. These remain
+visible even when observation starts after the handshake, without a debug log.
+Message arrivals and handshake timing still require network debug logging and
+read access to the log. The observer does not enable logging or turn RPC feature
+snapshots into message events. Missing or unreadable logs do not imply missing
 P2P traffic. Existing nodes remain responsible for their own log rotation.
 
 Signet observation uses the node's existing chain and settings. A custom Signet
@@ -274,9 +286,10 @@ docker compose -f compose.yaml -f compose.relay-test.yaml --profile relay-test b
 
 The image builds `bitcoind` and `bitcoin-cli` from the published
 `pseudoramdom/bitcoin` BIP332 branch, pinned by default to commit
-`073a114dde430cc783564b35cae4e232e8a6aeb4`. `BITCOIN_REVISION` can select another
-full 40-character commit hash available in that repository. The build verifies
-the checked-out hash and requires `-staletips` support. It uses a separate,
+`404e59c6072c50048d81955c477c7af8a0596553`. `BITCOIN_REVISION` can select another
+full 40-character commit hash available in that repository. When upgrading,
+update an existing `BITCOIN_REVISION` in your local `.env` too; it overrides the
+Compose default. The build verifies the checked-out hash and requires `-staletips` support. It uses a separate,
 allowlisted build context; local runs, node data, and credentials are never sent
 to the builder. Wallet, GUI, and IPC support are omitted.
 
@@ -311,20 +324,20 @@ responding, not that IBD has finished or that A is connected. After sync, inspec
 B's retained stale tips and per-connection message counters (requires `jq`):
 
 ```sh
-docker compose -f compose.yaml -f compose.relay-test.yaml exec -T testnet4-relay-peer bitcoin-cli -datadir=/data -testnet4 -rpcport=49332 getnetworkinfo | jq '.staletips'
+docker compose -f compose.yaml -f compose.relay-test.yaml exec -T testnet4-relay-peer bitcoin-cli -datadir=/data -testnet4 -rpcport=49332 getchaintips 1000 true
 docker compose -f compose.yaml -f compose.relay-test.yaml exec -T testnet4-relay-peer bitcoin-cli -datadir=/data -testnet4 -rpcport=49332 getpeerinfo | jq '.[] | {addr, received_staletip_bytes: (.bytesrecv_per_msg.staletip // 0)}'
 ```
 
 A must be out of IBD, have an eligible stale tip, and know that B has its fork
 point before it announces the branch. Difficulty-1 stale tips are filtered by
 this implementation. B requests eligible missing stale blocks when the sender
-advertises availability. A zero message count or empty stale-tip cache can be
+advertises availability. A zero message count or no relay-eligible tips can be
 normal; Testnet4 does not guarantee a qualifying fork on demand. Use regtest for
 repeatable fork experiments.
 
-The observer reads live `debug=net` logs; it does not reconstruct negotiation
-that occurred before observation began. If necessary, restart **only B** while
-the observer is running to observe a fresh handshake:
+The connection inspector reports feature support from RPC even if the handshake
+predates observation. To capture the handshake messages in the timeline too,
+restart **only B** while the observer is running:
 
 ```sh
 docker compose -f compose.yaml -f compose.relay-test.yaml restart testnet4-relay-peer
@@ -384,17 +397,19 @@ Bitcoin Core; the GUI does not force a particular outcome.
 ## What the display means
 
 - **Node state** comes from RPC. Active chain, header knowledge, block data,
-  validation status, and stale-tip cache membership are separate observations.
-  A stored block is not necessarily fully validated. The cache is a bounded
-  policy view, not an exhaustive list of all known forks.
+  validation status, and relay eligibility are separate observations. A stored
+  block can still await full validation. The `staletips_only` query includes
+  relayable tips even when a known descendant appears in the ordinary chain
+  tips list. The summary counts distinct relayable hashes across reporting nodes.
 - **Regtest message events** come from Core's `-capturemessages` files, not from
   inferred arrows. `feature`, `staletip`, inventory, headers, requests, and block
   messages are decoded by the server. **Testnet4 events** come from Core's live
   network log, without decoded payloads. These timestamps describe local
   processing, not exact wire arrival. A received message is not proof that its
   contents were accepted.
-- **Negotiation** displays captured advertisements and handshake messages. A
-  configured local mode and a peer's advertised preference are different facts.
+- **Negotiation** uses RPC for local feature support and the peer's advertised
+  preference, with captured messages or logs supplying handshake observations.
+  Current feature support and an observed transmission are different facts.
 - **Timeline pause** pauses the display; it does not freeze nodes or mining.
 - **Export** downloads the current bounded snapshot and event history. Regtest
   retains complete raw captures and debug logs in its session directory. Long
