@@ -110,7 +110,7 @@ print_commands() {
     printf '\nCommands for inspecting each node (usable from Bash or fish):\n'
     for node in 0 1 2; do
         printf '\n  # %s, mode=%s\n' "${NAMES[$node]}" "${MODES[$node]}"
-        printf '  %q -regtest -datadir=%q -rpcport=%s getchaintips 1000 true\n' \
+        printf '  %q -regtest -datadir=%q -rpcport=%s -named getchaintips max_depth=1000 staletips_only=true\n' \
             "$CLI" "$RUN_DIR/node$node" "$((PORT_BASE + 10 + node))"
         printf '  %q -regtest -datadir=%q -rpcport=%s stop\n' \
             "$CLI" "$RUN_DIR/node$node" "$((PORT_BASE + 10 + node))"
@@ -203,7 +203,7 @@ copy_block() {
 
 stale_entry() {
     local result
-    rpc "$1" getchaintips 1000 true | jq -e --arg hash "$STALE" --arg fork "$COMMON" \
+    rpc "$1" -named getchaintips max_depth=1000 staletips_only=true | jq -e --arg hash "$STALE" --arg fork "$COMMON" \
         'any(.[]; .hash == $hash and .fork_point == $fork and .height == 3 and .branchlen == 2)' || return 1
     if result=$(rpc "$1" getblock "$STALE" 0 2>&1); then
         [[ "$2" == true ]]
@@ -215,7 +215,7 @@ stale_entry() {
 show_tips() {
     local node
     for node in 0 1 2; do
-        rpc "$node" getchaintips 1000 true | jq --arg node "${NAMES[$node]}" --arg mode "${MODES[$node]}" \
+        rpc "$node" -named getchaintips max_depth=1000 staletips_only=true | jq --arg node "${NAMES[$node]}" --arg mode "${MODES[$node]}" \
             '{node: $node, mode: $mode, relayable_stale_tips: .}'
         rpc "$node" getnetworkinfo | jq '{localfeatures}'
     done
@@ -301,7 +301,7 @@ done
 for node in 0 1 2; do wait_for "${NAMES[$node]} is on the winning chain and outside IBD" on_winning_chain "$node"; done
 wait_for "A locally tracks its reorged-out tip with block data" stale_entry 0 true
 for node in 1 2; do
-    rpc "$node" getchaintips 1000 true | jq -e 'length == 0' >/dev/null
+    rpc "$node" -named getchaintips max_depth=1000 staletips_only=true | jq -e 'length == 0' >/dev/null
     if result=$(rpc "$node" getblockheader "$STALE" 2>&1); then
         die "${NAMES[$node]} already knows the stale header before P2P relay."
     fi

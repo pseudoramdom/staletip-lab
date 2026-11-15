@@ -30,9 +30,11 @@ class ExistingNode(ThreadingHTTPServer):
         self.peers = []
 
     def result(self, method, params):
-        if method == "getchaintips" and params == [1000, True]:
-            assert "BIP332" in (self.local_features or {})
-            return []
+        if method == "getchaintips":
+            if params == {"max_depth": 1000, "staletips_only": True}:
+                assert "BIP332" in (self.local_features or {})
+                return []
+            assert params == {"max_depth": 1000}
         return {
             "getblockchaininfo": {"chain": self.chain, "blocks": 0, "headers": 0,
                                    "bestblockhash": self.tip, "initialblockdownload": False,

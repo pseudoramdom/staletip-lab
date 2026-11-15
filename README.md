@@ -21,8 +21,8 @@ From the repository root, in Bash or fish:
 Open **http://127.0.0.1:8765**. Both executables must come from a build with
 `-staletips` and BIP434 negotiation support; a standard release without the
 stale-tip implementation cannot run the experiments. Use a current branch build
-that exposes `getchaintips` with `staletips_only` and `max_depth`,
-`getnetworkinfo.localfeatures`, and `getpeerinfo[].features`.
+that accepts the `getchaintips` named arguments `staletips_only` and `max_depth`
+and exposes `getnetworkinfo.localfeatures` and `getpeerinfo[].features`.
 
 Binary selection uses `--bin-dir` first, then `BITCOIN_BIN_DIR`, then the directory
 containing `bitcoind` on `PATH`. That directory must also contain `bitcoin-cli`.
@@ -82,9 +82,9 @@ the public testnet4 blockchain. No wallet or test coins are required.
   can relay ordinary blocks without supporting stale-tip relay. The absence of
   stale-tip events does not by itself indicate a problem, and there may be no
   recent stale branches for compatible peers to announce.
-- **Testnet4 relay policy** excludes minimum-difficulty stale tips and may impose
-  a higher difficulty cutoff. A known fork can appear in the block tree without
-  qualifying for relay, even after both nodes finish sync.
+- **Testnet4 relay policy** requires a stale tip to meet a minimum difficulty of
+  approximately 2^20 in the pinned build. A known fork can appear in the block
+  tree without qualifying for relay, even after both nodes finish sync.
 
 Testnet4 stores its persistent profile at `runs/testnet4/`. On restart, the lab
 restores the same node definitions, stale-tip modes, peer settings, ports, local
@@ -140,9 +140,9 @@ JSON configuration. Optional `log_file` enables message observations.
 nodes; set it to the address peers actually report for that node.
 
 RPC supplies chain state, block trees, relay eligibility, and current feature
-support. `getchaintips 1000` supplies the block tree's recent tips.
-For nodes with stale-tip tracking enabled, `getchaintips 1000 true` supplies
-the relayable stale tips counted by the lab. The lab checks block availability separately
+support. The block tree uses `bitcoin-cli -named getchaintips max_depth=1000`.
+For nodes with stale-tip tracking enabled, the lab adds `staletips_only=true`
+to count relayable tips. The lab checks block availability separately
 with `getblock`; chain-tip status alone does not prove that a pruned node still
 has the data. During public-network IBD, branch queries are deferred and the
 interface marks the relay-eligible count as not queried.
@@ -286,7 +286,7 @@ docker compose -f compose.yaml -f compose.relay-test.yaml --profile relay-test b
 
 The image builds `bitcoind` and `bitcoin-cli` from the published
 `pseudoramdom/bitcoin` BIP332 branch, pinned by default to commit
-`404e59c6072c50048d81955c477c7af8a0596553`. `BITCOIN_REVISION` can select another
+`77c5e1f7ca0b7e566a819a59e58090aee5c13975`. `BITCOIN_REVISION` can select another
 full 40-character commit hash available in that repository. When upgrading,
 update an existing `BITCOIN_REVISION` in your local `.env` too; it overrides the
 Compose default. The build verifies the checked-out hash and requires `-staletips` support. It uses a separate,
@@ -324,7 +324,7 @@ responding, not that IBD has finished or that A is connected. After sync, inspec
 B's retained stale tips and per-connection message counters (requires `jq`):
 
 ```sh
-docker compose -f compose.yaml -f compose.relay-test.yaml exec -T testnet4-relay-peer bitcoin-cli -datadir=/data -testnet4 -rpcport=49332 getchaintips 1000 true
+docker compose -f compose.yaml -f compose.relay-test.yaml exec -T testnet4-relay-peer bitcoin-cli -datadir=/data -testnet4 -rpcport=49332 -named getchaintips max_depth=1000 staletips_only=true
 docker compose -f compose.yaml -f compose.relay-test.yaml exec -T testnet4-relay-peer bitcoin-cli -datadir=/data -testnet4 -rpcport=49332 getpeerinfo | jq '.[] | {addr, received_staletip_bytes: (.bytesrecv_per_msg.staletip // 0)}'
 ```
 

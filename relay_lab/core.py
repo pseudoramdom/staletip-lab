@@ -29,6 +29,12 @@ class RPCError(RuntimeError):
         self.code = code
 
 
+def rpc_body(request_id, method, params, named):
+    if params and named:
+        raise ValueError("Pass RPC arguments either by position or by name")
+    return json.dumps({"jsonrpc": "2.0", "id": request_id, "method": method, "params": named or params}).encode()
+
+
 class Node:
     def __init__(self, node_id, name, mode, datadir, binary, network, p2p_port, rpc_port,
                  public_network=False, configured_peers=None):
@@ -63,12 +69,12 @@ class Node:
     def chain_dir(self):
         return self.datadir / self.network.chain_directory
 
-    def rpc(self, method, *params):
+    def rpc(self, method, *params, **named):
         try:
             cookie = (self.chain_dir / ".cookie").read_text().strip()
         except OSError as error:
             raise RPCError("%s RPC is not ready: %s" % (self.name, error)) from error
-        body = json.dumps({"jsonrpc": "2.0", "id": "relay-lab", "method": method, "params": list(params)}).encode()
+        body = rpc_body("relay-lab", method, params, named)
         request = urllib.request.Request("http://127.0.0.1:%d/" % self.rpc_port, data=body,
                                         headers={"Authorization": "Basic " + base64.b64encode(cookie.encode()).decode(),
                                                  "Content-Type": "application/json"})
@@ -806,7 +812,7 @@ class Lab:
         # Header synchronization can lead validation by hundreds of thousands
         # of blocks. Walking from that header tip would block all controls.
         tips_available = not (self.network.public_peers and info["initialblockdownload"])
-        tips = node.rpc("getchaintips", 1000) if tips_available else [active_tip]
+        tips = node.rpc("getchaintips", max_depth=1000) if tips_available else [active_tip]
         cutoff = max(0, info["blocks"] - self.WINDOW + 1)
         records, active, validated, tip_status = {}, set(), set(), {}
         shown_tips = sorted(tips, key=lambda item: (item["status"] != "active", -item["height"]))[:64]
@@ -857,7 +863,7 @@ class Lab:
                 "none" if feature is None else "unknown")
         stale_tips = []
         if tips_available and mode in ("headers", "blocks"):
-            stale_tips = node.rpc("getchaintips", 1000, True)
+            stale_tips = node.rpc("getchaintips", max_depth=1000, staletips_only=True)
         node.status, node.error = "running", None
         return {"id": node.id, "name": node.name, "mode": mode, "running": True,
                 "status": "running", "height": info["blocks"], "best_hash": info["bestblockhash"],

@@ -9,7 +9,7 @@ import urllib.request
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from .core import Node, RPCError
+from .core import Node, RPCError, rpc_body
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -68,7 +68,7 @@ class ObserverNode(Node):
     def stop(self):
         pass
 
-    def rpc(self, method, *params):
+    def rpc(self, method, *params, **named):
         if method not in self.READ_METHODS:
             raise ValueError("Observer mode forbids RPC method: " + method)
         try:
@@ -78,7 +78,7 @@ class ObserverNode(Node):
                 credentials = os.environ[self.user_env] + ":" + os.environ[self.password_env]
         except (OSError, KeyError) as error:
             raise RPCError("%s RPC authentication is unavailable: %s" % (self.name, error)) from error
-        body = json.dumps({"jsonrpc": "2.0", "id": "staletip-observer", "method": method, "params": list(params)}).encode()
+        body = rpc_body("staletip-observer", method, params, named)
         request = urllib.request.Request(self.rpc_url, data=body, headers={
             "Authorization": "Basic " + base64.b64encode(credentials.encode()).decode(),
             "Content-Type": "application/json"})

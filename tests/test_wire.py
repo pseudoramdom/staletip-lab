@@ -113,6 +113,11 @@ class ProtocolTests(unittest.TestCase):
             with self.subTest(invalid=invalid.hex()), self.assertRaises(ValueError):
                 decode("staletip", invalid)
 
+    def test_staletip_header_count_limit(self):
+        self.assertEqual(decode("staletip", staletip([GENESIS_HEADER] * 20))["header_count"], 20)
+        with self.assertRaises(ValueError):
+            decode("staletip", staletip([GENESIS_HEADER] * 21))
+
     def test_inventory_keeps_witness_flags_and_display_hash_order(self):
         payload = b"\x01" + struct.pack("<I", 0x40000002) + bytes.fromhex(GENESIS_HASH)[::-1]
         for kind in ("inv", "getdata", "notfound"):

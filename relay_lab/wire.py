@@ -50,7 +50,7 @@ def decode(kind, data):
         previous = r.take(32)
         fork = previous[::-1].hex()
         headers = []
-        for _ in range(r.count(2000)):
+        for _ in range(r.count(20)):
             compressed = r.take(48)
             header = compressed[:4] + previous + compressed[4:]
             h = block_hash(header)

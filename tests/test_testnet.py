@@ -117,7 +117,7 @@ class TestnetPolicyTests(LabAssertions, unittest.TestCase):
         tips.append(dict(old, hash="child801", height=801, branchlen=2, status="invalid"))
         relayable = [tips[1], tips[2], old]
 
-        def rpc(method, *params):
+        def rpc(method, *params, **named):
             if method == "getblockchaininfo":
                 return {"blocks": 1000, "headers": 1000, "bestblockhash": "block1000",
                         "initialblockdownload": False, "pruned": True}
@@ -126,9 +126,10 @@ class TestnetPolicyTests(LabAssertions, unittest.TestCase):
             if method == "getpeerinfo":
                 return []
             if method == "getchaintips":
-                if params == (1000, True):
+                self.assertFalse(params)
+                if named == {"max_depth": 1000, "staletips_only": True}:
                     return relayable
-                self.assertEqual(params, (1000,))
+                self.assertEqual(named, {"max_depth": 1000})
                 return tips
             if method == "getblockheader":
                 block = params[0]

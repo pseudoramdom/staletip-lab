@@ -19,7 +19,7 @@ services:
     build:
       context: ./docker/bitcoin
       args:
-        BITCOIN_REVISION: "${BITCOIN_REVISION:-404e59c6072c50048d81955c477c7af8a0596553}"
+        BITCOIN_REVISION: "${BITCOIN_REVISION:-77c5e1f7ca0b7e566a819a59e58090aee5c13975}"
         BUILD_JOBS: "${BITCOIN_BUILD_JOBS:-2}"
     network_mode: host
     user: "${TESTNET4_UID:-1000}:${TESTNET4_GID:-1000}"
