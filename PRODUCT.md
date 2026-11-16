@@ -8,7 +8,7 @@ web
 
 ## Users
 
-Researchers studying how stale tips propagate under BIP332: fork propagation, stale-block data availability, and relay bandwidth. They run the lab locally against real Bitcoin Core nodes on regtest, or monitor testnet4, and read the result closely rather than glancing at it.
+Researchers studying how stale tips propagate under BIP332: fork propagation, stale-block data availability, and relay bandwidth. They run the lab locally against real Bitcoin Core nodes on regtest, or monitor Testnet4, Testnet5, or Signet, and read the result closely rather than glancing at it.
 
 ## Product Purpose
 
@@ -16,12 +16,12 @@ A local laboratory for experimenting with BIP332 stale-tip relay using real `bit
 
 ## Positioning
 
-Every view is backed by real nodes and real messages: each node is its own Bitcoin Core process built from the `bip332-staletip-relay` branch, and the timeline comes from Core's message capture (regtest) or network log (testnet4). Nothing is simulated.
+Every view is backed by real nodes and real messages: each node is its own Bitcoin Core process built from the BIP332 implementation for its network, and the timeline comes from Core's message capture (regtest) or network log (public networks). Nothing is simulated.
 
 ## Operating Context
 
-- Runs on the researcher's machine (macOS or Linux, Python 3.9+), served on loopback at `127.0.0.1:8765` (regtest) or `:8766` (testnet4).
-- Regtest: create nodes, connect them, mine, create forks on demand, reset sessions. Testnet4: monitor public peers, sync progress, negotiation.
+- Runs on the researcher's machine (macOS or Linux, Python 3.9+), served on loopback at `127.0.0.1:8765` (regtest), `:8766` (Testnet4), `:8767` (Signet), or `:8768` (Testnet5).
+- Regtest: create nodes, connect them, mine, create forks on demand, reset sessions. Testnet4 and Testnet5: monitor public peers, sync progress, negotiation.
 - Session data lives under `runs/`; sessions can be exported as JSON.
 
 ## Capabilities and Constraints

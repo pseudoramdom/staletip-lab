@@ -1,0 +1,65 @@
+services:
+  testnet5:
+    volumes:
+      - type: bind
+        source: "${TESTNET5_RELAY_OBSERVER_CONFIG:-./examples/observer-testnet5-relay.json}"
+        target: /config/nodes.json
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: "${TESTNET5_RELAY_DATA:-./relay-peer-data-testnet5}"
+        target: /relay-peer
+        read_only: true
+        bind:
+          create_host_path: false
+  testnet5-relay-peer:
+    profiles: [relay-test]
+    image: staletip-bitcoin:testnet5
+    build:
+      context: ./docker/bitcoin
+      args:
+        BITCOIN_NETWORK: testnet5
+        BITCOIN_REPO: "${TESTNET5_BITCOIN_REPO:-https://github.com/pseudoramdom/bitcoin.git}"
+        BITCOIN_REVISION: "${TESTNET5_BITCOIN_REVISION:-f9d865a5267e43d70318d59ab3df1e459177a0f0}"
+        BUILD_JOBS: "${BITCOIN_BUILD_JOBS:-2}"
+    network_mode: host
+    user: "${TESTNET5_UID:-1000}:${TESTNET5_GID:-1000}"
+    restart: unless-stopped
+    stop_grace_period: 5m
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    tmpfs: [/tmp]
+    command:
+      - -datadir=/data
+      - -testnet5
+      - -server=1
+      - -staletips=blocks
+      - -prune=10000
+      - "-connect=${TESTNET5_RELAY_PEER:?Set TESTNET5_RELAY_PEER to node A's reachable P2P host:port in .env}"
+      - -listen=0
+      - -dnsseed=0
+      - -discover=0
+      - -rpcbind=127.0.0.1
+      - -rpcallowip=127.0.0.1
+      - -rpcport=49333
+      - -debug=net
+      - -printtoconsole=1
+    healthcheck:
+      test: ["CMD", "bitcoin-cli", "-datadir=/data", "-testnet5", "-rpcport=49333", "getblockchaininfo"]
+      interval: 30s
+      timeout: 10s
+      start_period: 60s
+      retries: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    volumes:
+      - type: bind
+        source: "${TESTNET5_RELAY_DATA:-./relay-peer-data-testnet5}"
+        target: /data
+        bind:
+          create_host_path: false

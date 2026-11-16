@@ -19,7 +19,7 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
 
 class ObserverNode(Node):
     READ_METHODS = frozenset({"getblockchaininfo", "getnetworkinfo", "getpeerinfo",
-                              "getchaintips", "getblockheader", "getblock", "uptime"})
+                              "getchaintips", "getblockhash", "getblockheader", "getblock", "uptime"})
 
     def __init__(self, node_id, config, network):
         if not isinstance(config, dict):
@@ -105,6 +105,8 @@ class ObserverNode(Node):
                 raise RPCError("%s is on %s; expected %s" % (self.name, result.get("chain"), self.network.name))
             uptime = self.rpc("uptime")
             if not self.available or (self.last_uptime is not None and uptime < self.last_uptime):
+                if self.network.genesis and self.rpc("getblockhash", 0) != self.network.genesis:
+                    raise RPCError("%s uses a different genesis block from live Testnet5" % self.name)
                 self.generation += 1
                 self.started_at = time.time()
                 self.records.clear()

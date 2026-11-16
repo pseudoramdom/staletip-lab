@@ -1,14 +1,16 @@
 # Staletip Lab
 
 A local web interface for experimenting with [BIP332](https://github.com/bitcoin/bips/blob/master/bip-0332.md) on regtest and monitoring
-testnet4 and Signet using real Bitcoin Core nodes. Start and stop nodes, choose their
+Testnet4, Signet, and Testnet5 using real Bitcoin Core nodes. Start and stop nodes, choose their
 stale-tip mode, inspect block trees, and follow negotiation and relay messages.
 Mining and on-demand fork creation are available only on regtest.
 
 ## Start
 
 Requires macOS or Linux and Python 3.9 or newer. Managed-node experiments also
-require `bitcoind`/`bitcoin-cli` built from the `bip332-staletip-relay` branch.
+require `bitcoind` and `bitcoin-cli` from the branch for their network.
+Use `bip332-staletip-relay` for regtest, Testnet4, and your existing Signet node.
+Use `bip332-staletip-relay-testnet5` for Testnet5.
 Observer mode connects to existing nodes and needs no Bitcoin binaries locally. There are no Python packages, JavaScript packages,
 CDNs, wallets, or frontend build steps to install.
 
@@ -24,8 +26,9 @@ stale-tip implementation cannot run the experiments. Use a current branch build
 that accepts the `getchaintips` named arguments `staletips_only` and `max_depth`
 and exposes `getnetworkinfo.localfeatures` and `getpeerinfo[].features`.
 
-Binary selection uses `--bin-dir` first, then `BITCOIN_BIN_DIR`, then the directory
-containing `bitcoind` on `PATH`. That directory must also contain `bitcoin-cli`.
+Binary selection uses `--bin-dir` first, then the network’s environment variable
+(`TESTNET5_BITCOIN_BIN_DIR` for Testnet5, `BITCOIN_BIN_DIR` otherwise), then
+the directory containing `bitcoind` on `PATH`. That directory must also contain `bitcoin-cli`.
 For example, to use an environment variable and a different web port:
 
 ```sh
@@ -111,6 +114,19 @@ Mining, automatic miners, starter-chain creation, and publishing forks are
 unavailable on testnet4 in both the interface and the backend API. Use regtest
 for repeatable fork experiments.
 
+## Monitor Testnet5
+
+Start the managed monitor with a build of `bip332-staletip-relay-testnet5`:
+
+```sh
+env TESTNET5_BITCOIN_BIN_DIR=/path/to/testnet5/build/bin ./run-lab.py --network testnet5
+```
+
+Open **http://127.0.0.1:8768** and enter a reachable Testnet5 peer.
+The pinned build has no fixed or DNS seeds. Testnet5 uses P2P port `18353`,
+RPC port `18352`, and a separate managed profile at `runs/testnet5/`.
+The lab checks the launch genesis before displaying a Testnet5 node.
+
 ## Observe existing nodes
 
 Observer mode attaches to nodes that you already operate, including nodes managed
@@ -124,12 +140,14 @@ Copy an example JSON configuration and set the RPC endpoint and authentication:
 ```sh
 ./run-lab.py --observe /path/to/testnet4-nodes.json --network testnet4
 ./run-lab.py --observe /path/to/signet-nodes.json --network signet --port 8767
+./run-lab.py --observe /path/to/testnet5-nodes.json --network testnet5
 ```
 
 Run these in separate terminals. Each observer handles one network and checks
 that the RPC node reports that network. Multiple nodes on the same network can
 be listed in the configuration's `nodes` array. Examples are in
-[`examples/observer-testnet4.json`](examples/observer-testnet4.json) and
+[`examples/observer-testnet4.json`](examples/observer-testnet4.json),
+[`examples/observer-testnet5.json`](examples/observer-testnet5.json), and
 [`examples/observer-signet.json`](examples/observer-signet.json).
 
 Each node requires `name`, `rpc_url`, and either `cookie_file` or both
@@ -217,6 +235,54 @@ A node restart or temporary RPC outage is reflected in the interface, and the
 observer retries without restarting that node. The image's HTTP health check
 checks the visualizer, not the availability of the independently managed nodes.
 
+## Additional Testnet5 deployment
+
+Testnet4 and Signet use the default Compose project. The Testnet5 project
+can run alongside them or on its own. Set `TESTNET5_DATADIR` to the existing
+node’s chain directory, create `TESTNET5_LAB_DATA`, and set its UID/GID as
+in the observer setup above. To start only the Testnet5 observer:
+
+```sh
+docker compose -f compose.testnet5.yaml up --build -d
+```
+
+From your workstation, open the SSH tunnel:
+
+```sh
+ssh -N -L 8768:127.0.0.1:8768 user@your-vps
+```
+
+To also run a Testnet5 relay peer, set `TESTNET5_RELAY_PEER` to A’s reachable
+P2P endpoint. Copy `examples/observer-testnet5-relay.json` to
+`observer-config/testnet5-relay.json`, edit A’s addresses, and set
+`TESTNET5_RELAY_OBSERVER_CONFIG` to that copy. Create `TESTNET5_RELAY_DATA`
+(default `./relay-peer-data-testnet5`) with write access for `TESTNET5_UID`.
+The peer has its own image and uses loopback RPC port `49333`.
+
+```sh
+docker compose -f compose.testnet5.yaml -f compose.testnet5-relay.yaml --profile relay-test up --build -d
+```
+
+### Choose a Bitcoin fork
+
+The following settings apply to the optional Bitcoin peer images. Observers
+connect to your existing nodes over RPC and use whatever build those nodes run.
+
+| Peer | Source URL in `.env` | Commit in `.env` | Default branch used for the pin |
+| --- | --- | --- | --- |
+| Testnet4 | `BITCOIN_REPO` | `BITCOIN_REVISION` | `bip332-staletip-relay` |
+| Testnet5 | `TESTNET5_BITCOIN_REPO` | `TESTNET5_BITCOIN_REVISION` | `bip332-staletip-relay-testnet5` |
+
+Both default to `https://github.com/pseudoramdom/bitcoin.git`. To build the
+Testnet5 peer from your fork, put its HTTPS clone URL and a published full
+40-character commit hash in the two Testnet5 variables, then rerun the
+Testnet5 Compose command above. The pinned defaults are in
+[`examples/observer.env.example`](examples/observer.env.example).
+
+If you used the earlier Testnet5-only configuration, move its
+`BITCOIN_REVISION` value to `TESTNET5_BITCOIN_REVISION`. Keep the Testnet4
+pin in `BITCOIN_REVISION` and give each relay peer its own data directory.
+
 ## Optional Testnet4 relay peer
 
 The `testnet4-relay-peer` service adds a real BIP332 node **B** alongside the
@@ -287,7 +353,7 @@ docker compose -f compose.yaml -f compose.relay-test.yaml --profile relay-test b
 The image builds `bitcoind` and `bitcoin-cli` from the published
 `pseudoramdom/bitcoin` BIP332 branch, pinned by default to commit
 `77c5e1f7ca0b7e566a819a59e58090aee5c13975`. `BITCOIN_REVISION` can select another
-full 40-character commit hash available in that repository. When upgrading,
+full 40-character commit hash available in the repository selected by `BITCOIN_REPO`. When upgrading,
 update an existing `BITCOIN_REVISION` in your local `.env` too; it overrides the
 Compose default. The build verifies the checked-out hash and requires `-staletips` support. It uses a separate,
 allowlisted build context; local runs, node data, and credentials are never sent
@@ -422,12 +488,12 @@ responsive while actions finish.
 
 ## Saved runs
 
-`runs/` contains node data, the persistent testnet4 profile, logs, captures, and
+`runs/` contains node data, persistent network profiles, logs, captures, and
 session snapshots. It is excluded from Git, along with Python caches and local
 virtual environments. Downloaded chains can occupy many gigabytes per node.
 
 Stop the server before copying or moving the repository and its `runs/` directory.
-The testnet4 profile stores node IDs and settings; datadir paths are reconstructed
+Each managed testnet profile stores node IDs and settings; datadir paths are reconstructed
 under the new location on startup. Historical snapshots and logs retain the paths
 recorded when they were created. Regtest starts a fresh session on launch, while
 its previous runs remain available on disk.
@@ -441,12 +507,12 @@ relay_lab/config.py       Bitcoin Core binary selection
 relay_lab/core.py         Owned node processes, jobs, RPC state, capture ingestion
 relay_lab/networks.py     Network arguments and mining adapter
 relay_lab/wire.py         Incremental capture reader and message decoding
-relay_lab/logs.py         Bounded testnet4 network-log observations
+relay_lab/logs.py         Bounded public-network log observations
 relay_lab/static/         Browser interface; no build tooling
 tests/                   Protocol, HTTP boundary, optional real-node tests
 ```
 
-The network adapters implement **regtest experiments**, **testnet4 monitoring**,
+The network adapters implement **regtest experiments**, **Testnet4 and Testnet5 monitoring**,
 and **Signet observation**. Signet is supported by attaching to an existing node,
 including a custom Signet node. Creating Signet networks, signing blocks, and
 mining on Signet are not implemented.
@@ -466,14 +532,13 @@ python3 -B -m unittest discover -s tests -v
 
 The optional integration tests launch temporary real nodes and verify regtest
 onward header relay, block fetching, mining, and lifecycle operations, plus
-testnet4 log observations, peer negotiation, and persistent profile restarts:
+Testnet4 and Testnet5 log observations, peer negotiation, and persistent profile restarts:
 
 ```sh
-env STALETIP_INTEGRATION=1 BITCOIN_BIN_DIR=/path/to/bitcoin/build/bin python3 -B -m unittest discover -s tests -v
+env STALETIP_INTEGRATION=1 BITCOIN_BIN_DIR=/path/to/bitcoin/build/bin TESTNET5_BITCOIN_BIN_DIR=/path/to/testnet5/build/bin python3 -B -m unittest discover -s tests -v
 ```
 
-The automated testnet4 test uses only local peers, with public discovery disabled.
-It neither contacts the public network nor downloads its chain.
+The automated network tests use local peers with public discovery disabled.
 
 Set `BITCOIN_BIN_DIR` through `env BITCOIN_BIN_DIR=/absolute/path/to/build/bin`
 when testing another build. These commands work from Bash or fish.

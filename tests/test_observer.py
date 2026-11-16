@@ -12,7 +12,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from relay_lab.core import Lab
-from relay_lab.networks import Signet, Testnet4
+from relay_lab.networks import Signet, Testnet4, Testnet5
 
 
 class ExistingNode(ThreadingHTTPServer):
@@ -20,12 +20,12 @@ class ExistingNode(ThreadingHTTPServer):
 
     def __init__(self):
         super().__init__(("127.0.0.1", 0), RPCHandler)
-        self.chain = "testnet4"
+        self.chain = "testnet5"
         self.cookie = "observer:initial-cookie"
         self.available = True
         self.calls = []
         self.uptime = 100
-        self.tip = "11" * 32
+        self.tip = Testnet5.genesis
         self.local_features = {}
         self.peers = []
 
@@ -34,7 +34,7 @@ class ExistingNode(ThreadingHTTPServer):
             if params == {"max_depth": 1000, "staletips_only": True}:
                 assert "BIP332" in (self.local_features or {})
                 return []
-            assert params == {"max_depth": 1000}
+            assert params == ([] if self.local_features is None else {"max_depth": 1000})
         return {
             "getblockchaininfo": {"chain": self.chain, "blocks": 0, "headers": 0,
                                    "bestblockhash": self.tip, "initialblockdownload": False,
@@ -42,6 +42,7 @@ class ExistingNode(ThreadingHTTPServer):
             "getnetworkinfo": {"localfeatures": self.local_features, "connections": len(self.peers)},
             "getpeerinfo": self.peers,
             "getchaintips": [{"hash": self.tip, "height": 0, "branchlen": 0, "status": "active"}],
+            "getblockhash": self.tip,
             "getblockheader": {"hash": self.tip, "height": 0, "time": 1},
             "getblock": {"hash": self.tip, "size": 285},
             "uptime": self.uptime,
@@ -92,7 +93,7 @@ class ObserverTests(unittest.TestCase):
 
     def lab(self, network=None, run_dir=None):
         lab = Lab(bin_dir=None, run_dir=run_dir or self.root / ("session%d" % len(self.labs)),
-                  network=network or Testnet4(), observers=[dict(self.config)])
+                  network=network or Testnet5(), observers=[dict(self.config)])
         self.labs.append(lab)
         return lab
 
@@ -109,7 +110,7 @@ class ObserverTests(unittest.TestCase):
         return self.wait_for(lab, lambda s: len(s["nodes"]) == 1 and s["nodes"][0].get("status") == "running")
 
     def test_attaches_to_both_networks_without_node_ownership(self):
-        for network in (Testnet4(), Signet()):
+        for network in (Testnet4(), Signet(), Testnet5()):
             with self.subTest(network=network.name):
                 self.server.chain = network.name
                 with patch("relay_lab.core.subprocess.Popen") as spawn, patch("relay_lab.core.rotate_log") as rotate:
@@ -127,7 +128,7 @@ class ObserverTests(unittest.TestCase):
 
     def test_rpc_features_are_available_without_handshake_logs(self):
         self.server.local_features = {"BIP332": {"prefers_blocks": False}}
-        self.server.peers = [{"id": 41, "addr": "192.0.2.1:48333", "inbound": False,
+        self.server.peers = [{"id": 41, "addr": "192.0.2.1:18353", "inbound": False,
                               "conntime": 1, "version": 70017,
                               "features": {"BIP332": {"prefers_blocks": True}}}]
         lab = self.lab()
@@ -167,7 +168,7 @@ class ObserverTests(unittest.TestCase):
             with self.subTest(method=method), self.assertRaises(ValueError):
                 node.rpc(method)
         self.assertTrue(set(self.server.calls).issubset({"getblockchaininfo", "getnetworkinfo", "getpeerinfo",
-                                                       "getchaintips", "getblockheader", "getblock", "uptime"}))
+                                                       "getchaintips", "getblockhash", "getblockheader", "getblock", "uptime"}))
 
     def test_cookie_replacement_and_rpc_outage_recover_without_restart(self):
         lab = self.lab()
@@ -184,9 +185,15 @@ class ObserverTests(unittest.TestCase):
 
     def test_wrong_chain_is_not_presented_as_selected_network(self):
         self.server.chain = "signet"
-        lab = self.lab(Testnet4())
+        lab = self.lab(Testnet5())
         state = self.wait_for(lab, lambda s: s["nodes"] and s["nodes"][0].get("error"))
         self.assertNotEqual(state["nodes"][0]["status"], "running")
+        self.assertNotIn("getchaintips", self.server.calls)
+
+    def test_testnet5_prerelease_genesis_is_rejected(self):
+        self.server.tip = "ab" * 32
+        state = self.wait_for(self.lab(), lambda s: s["nodes"] and s["nodes"][0].get("error"))
+        self.assertIn("genesis", state["nodes"][0]["error"])
         self.assertNotIn("getchaintips", self.server.calls)
 
     def test_external_logs_are_read_only_and_clear_does_not_touch_profile(self):
@@ -227,31 +234,31 @@ class ObserverTests(unittest.TestCase):
         from relay_lab.observer import ObserverNode
 
         invalid = [
-            {"rpc_url": "http://user:password@127.0.0.1:48332"},
+            {"rpc_url": "http://user:password@127.0.0.1:18352"},
             {"rpc_url": "file:///tmp/rpc"},
-            {"rpc_url": "http://127.0.0.1:48332/wallet/private"},
+            {"rpc_url": "http://127.0.0.1:18352/wallet/private"},
             {"cookie_file": None},
             {"rpc_user_env": "OBSERVER_TEST_RPC_USER", "rpc_password_env": "OBSERVER_TEST_RPC_PASSWORD"},
         ]
         for overrides in invalid:
             with self.subTest(overrides=overrides), self.assertRaises(ValueError):
-                ObserverNode("n1", dict(self.config, **overrides), Testnet4())
+                ObserverNode("n1", dict(self.config, **overrides), Testnet5())
         self.assertEqual(self.server.calls, [])
 
 
 @unittest.skipUnless(os.environ.get("STALETIP_INTEGRATION") == "1",
                      "set STALETIP_INTEGRATION=1 to observe local-only real nodes")
 class ExistingNodeIntegrationTests(unittest.TestCase):
-    def test_observer_shutdown_leaves_existing_signet_and_testnet4_nodes_running(self):
+    def test_observer_shutdown_leaves_existing_nodes_running(self):
         import socket
 
         from relay_lab.config import find_bin_dir
         from relay_lab.core import Node
 
-        binary = find_bin_dir() / "bitcoind"
         with tempfile.TemporaryDirectory(prefix="staletip-existing-nodes-") as temporary:
             root = Path(temporary)
-            for network in (Signet(), Testnet4()):
+            for network in (Testnet4(), Signet(), Testnet5()):
+                binary = find_bin_dir(network=network.name) / "bitcoind"
                 with self.subTest(network=network.name):
                     with socket.socket() as p2p, socket.socket() as rpc:
                         p2p.bind(("127.0.0.1", 0))

@@ -1,4 +1,4 @@
-"""Testnet4 policies and optional local-only monitoring lifecycle tests."""
+"""Testnet5 policies and optional local-only monitoring lifecycle tests."""
 
 import os
 import tempfile
@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from relay_lab.networks import Testnet4
+from relay_lab.networks import Testnet4, Testnet5
 
 
 class LabAssertions:
@@ -45,12 +45,12 @@ class TestnetPolicyTests(LabAssertions, unittest.TestCase):
         self.bin_dir.mkdir()
         (self.bin_dir / "bitcoind").touch()
         self.run_dir = root / "profile"
-        self.lab = Lab(self.bin_dir, self.run_dir, network=Testnet4())
+        self.lab = Lab(self.bin_dir, self.run_dir, network=Testnet5())
         self.addCleanup(self.lab.close)
 
     def test_monitoring_policy_rejects_experiment_actions(self):
         session = self.lab.snapshot()["session"]
-        self.assertEqual(session["network"], "testnet4")
+        self.assertEqual(session["network"], "testnet5")
         self.assertTrue(session["capabilities"]["public_peers"])
         self.assertTrue(session["capabilities"]["persistent"])
         for capability in ("mining", "forks", "bootstrap"):
@@ -69,13 +69,13 @@ class TestnetPolicyTests(LabAssertions, unittest.TestCase):
 
         invalid = [
             {"public_network": "false", "peers": []},
-            {"public_network": False, "peers": "127.0.0.1:48333"},
-            {"public_network": False, "peers": ["https://example.com:48333"]},
-            {"public_network": False, "peers": ["user@example.com:48333"]},
+            {"public_network": False, "peers": "127.0.0.1:18353"},
+            {"public_network": False, "peers": ["https://example.com:18353"]},
+            {"public_network": False, "peers": ["user@example.com:18353"]},
             {"public_network": False, "peers": ["example.com:0"]},
             {"public_network": False, "peers": ["example.com:65536"]},
-            {"public_network": False, "peers": ["example .com:48333"]},
-            {"public_network": False, "peers": ["127.0.0.1:48333"] * 17},
+            {"public_network": False, "peers": ["example .com:18353"]},
+            {"public_network": False, "peers": ["127.0.0.1:18353"] * 17},
         ]
         with mock.patch.object(Node, "start") as start:
             for settings in invalid:
@@ -91,7 +91,7 @@ class TestnetPolicyTests(LabAssertions, unittest.TestCase):
         from relay_lab.core import Lab
 
         with self.assertRaises((RuntimeError, ValueError, OSError)):
-            duplicate = Lab(self.bin_dir, self.run_dir, network=Testnet4())
+            duplicate = Lab(self.bin_dir, self.run_dir, network=Testnet5())
             self.addCleanup(duplicate.close)
         original = self.lab.snapshot()["session"]
         self.lab._event("test", "An observation from this session")
@@ -105,7 +105,7 @@ class TestnetPolicyTests(LabAssertions, unittest.TestCase):
         from relay_lab.core import Node, RPCError
 
         node = Node("n1", "A", "blocks", self.run_dir / "node", self.lab.binary,
-                    Testnet4(), 18400, 18401)
+                    Testnet5(), 18400, 18401)
         tips = [{"hash": "block1000", "height": 1000, "branchlen": 0, "status": "active"}]
         for name, status in (("header", "headers-only"), ("pruned", "valid-fork"),
                              ("ineligible", "valid-headers"), ("unknown", "headers-only")):
@@ -158,7 +158,7 @@ class TestnetPolicyTests(LabAssertions, unittest.TestCase):
         from relay_lab.core import Node
 
         node = Node("n1", "A", "headers", self.run_dir / "node", self.lab.binary,
-                    Testnet4(), 18400, 18401)
+                    Testnet5(), 18400, 18401)
         calls = []
 
         def rpc(method, *params):
@@ -187,14 +187,17 @@ class TestnetPolicyTests(LabAssertions, unittest.TestCase):
 
 
 @unittest.skipUnless(os.environ.get("STALETIP_INTEGRATION") == "1",
-                     "set STALETIP_INTEGRATION=1 to run local-only real testnet4 nodes")
-class TestnetMonitoringTests(LabAssertions, unittest.TestCase):
+                     "set STALETIP_INTEGRATION=1 to run local-only real testnet nodes")
+class Testnet4MonitoringTests(LabAssertions, unittest.TestCase):
+    network = Testnet4()
+    genesis = "00000000da84f2bafbbc53dee25a72ae507ff4914b867c565be350b0da8bf043"
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix="staletip-testnet-integration-")
         self.addCleanup(self.temp.cleanup)
         from relay_lab.config import find_bin_dir
 
-        self.bin_dir = find_bin_dir()
+        self.bin_dir = find_bin_dir(network=self.network.name)
         self.labs = []
         self.addCleanup(self.stop_labs)
 
@@ -206,7 +209,7 @@ class TestnetMonitoringTests(LabAssertions, unittest.TestCase):
     def open_lab(self, name):
         from relay_lab.core import Lab
 
-        lab = Lab(self.bin_dir, Path(self.temp.name) / name, network=Testnet4())
+        lab = Lab(self.bin_dir, Path(self.temp.name) / name, network=self.network)
         self.labs.append(lab)
         return lab
 
@@ -238,7 +241,7 @@ class TestnetMonitoringTests(LabAssertions, unittest.TestCase):
             return False
 
         state = self.wait_for(lab, observed_external, "observed BIP332 preference from the external peer")
-        genesis = "00000000da84f2bafbbc53dee25a72ae507ff4914b867c565be350b0da8bf043"
+        genesis = self.genesis
         for node in state["nodes"]:
             self.assertEqual(node["best_hash"], genesis)
             self.assertTrue(node["ibd"])
@@ -272,13 +275,18 @@ class TestnetMonitoringTests(LabAssertions, unittest.TestCase):
                               and not self.node(s, second)["running"], "saved running and stopped node states")
         for node in state["nodes"]:
             self.assertEqual({key: node[key] for key in original[node["id"]]}, original[node["id"]])
-            self.assertTrue((Path(node["datadir"]) / "testnet4" / "blocks").is_dir())
+            self.assertTrue((Path(node["datadir"]) / self.network.chain_directory / "blocks").is_dir())
         self.assertEqual(self.node(state, first)["mode"], "blocks")
         self.assertEqual(self.node(state, first)["configured_peers"], [peer_address])
         self.wait_for(lab, observed_external, "external peer reconnection after reopening the profile")
         self.action(lab, "start_node", id=second)
         self.wait_for(lab, lambda s: any(link["connected"] and {link["a"], link["b"]} == {first, second}
                                        for link in s["links"]), "restored local topology after starting B")
+
+
+class Testnet5MonitoringTests(Testnet4MonitoringTests):
+    network = Testnet5()
+    genesis = Testnet5.genesis
 
 
 if __name__ == "__main__":

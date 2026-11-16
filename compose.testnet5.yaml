@@ -1,0 +1,33 @@
+name: staletip-lab-testnet5
+services:
+  testnet5:
+    image: staletip-lab:local
+    build: .
+    network_mode: host
+    user: "${TESTNET5_UID:-1000}:${TESTNET5_GID:-1000}"
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    tmpfs: [/tmp]
+    environment:
+      LAB_HTTP_PORT: "8768"
+    command: ["--observe", "/config/nodes.json", "--network", "testnet5", "--port", "8768", "--data-dir", "/data"]
+    volumes:
+      - type: bind
+        source: ./examples/observer-testnet5.json
+        target: /config/nodes.json
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: "${TESTNET5_DATADIR:?Set TESTNET5_DATADIR to the existing testnet5 chain directory}"
+        target: /bitcoin
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: "${TESTNET5_LAB_DATA:?Set TESTNET5_LAB_DATA to a writable observer-data directory}"
+        target: /data
+        bind:
+          create_host_path: false

@@ -1,0 +1,17 @@
+{
+  "nodes": [
+    {
+      "name": "A · Testnet5 VPS",
+      "rpc_url": "http://192.0.2.10:18352",
+      "cookie_file": "/bitcoin/.cookie",
+      "log_file": "/bitcoin/debug.log",
+      "p2p_address": "192.0.2.10:18353"
+    },
+    {
+      "name": "B · Testnet5 relay peer",
+      "rpc_url": "http://127.0.0.1:49333",
+      "cookie_file": "/relay-peer/testnet5/.cookie",
+      "log_file": "/relay-peer/testnet5/debug.log"
+    }
+  ]
+}

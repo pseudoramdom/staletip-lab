@@ -8,8 +8,8 @@ const short = (hash, length = 6) => hash ? `…${String(hash).slice(-length)}` :
 const externalPeer = id => state.external_peers.find(peer => peer.id === id);
 const nameOf = id => state.nodes.find(node => node.id === id)?.name || externalPeer(id)?.address || id || "peer";
 const networkName = () => state.session.network || "regtest";
-const monitoring = () => ["testnet4", "signet"].includes(networkName());
-const networkLabel = () => ({testnet4: "Testnet4", signet: "Signet", regtest: "Regtest"}[networkName()] || networkName());
+const monitoring = () => ["testnet4", "testnet5", "signet"].includes(networkName());
+const networkLabel = () => ({testnet4: "Testnet4", testnet5: "Testnet5", signet: "Signet", regtest: "Regtest"}[networkName()] || networkName());
 const observing = () => state.session.observer === true;
 const canManage = () => receivedState && !observing() && state.session.capabilities?.management !== false;
 const managementControls = '[data-lifecycle], [data-connection], [data-mine], ' + ["add-node", "connections", "mode", "peers", "miner", "mine-selected", "fork", "bootstrap", "monitor", "stop-all", "reset"].map(name => `[data-action="${name}"]`).join(", ");
@@ -137,7 +137,7 @@ function render() {
   $("#sessionCrumb").textContent = monitoring() ? "Persistent profile" : Number.isNaN(started.getTime()) ? "Session" : `Session ${started.toLocaleDateString([], {day: "numeric", month: "short"})}, ${started.toLocaleTimeString([], {hour12: false, hour: "2-digit", minute: "2-digit"})}`;
   $("#workspaceTitle").textContent = monitoring() ? `${networkLabel()} ${observing() ? "observer" : "monitor"}` : "Regtest workspace";
   $("#welcomeTitle").textContent = monitoring() ? `Your window into ${networkLabel()}.` : "Three nodes. One shared chain.";
-  $("#welcomeDescription").textContent = observing() ? "Waiting for the nodes listed in the observer configuration. Node services are managed on their host." : monitoring() ? "Start a node from your BIP332 branch, discover public peers, and watch it synchronize. Its downloaded chain is retained between visits." : "Start A → B → C with five common blocks. Create a fork on A, then watch its announcement reach B and C.";
+  $("#welcomeDescription").textContent = observing() ? "Waiting for the nodes listed in the observer configuration. Node services are managed on their host." : networkName() === "testnet4" ? "Start a node and watch it discover public Testnet4 peers and synchronize." : monitoring() ? "Enter a reachable Testnet5 peer to start syncing a new node. Its downloaded chain is retained between visits." : "Start A → B → C with five common blocks. Create a fork on A, then watch its announcement reach B and C.";
   $("#chainDescription").textContent = monitoring() ? `${observing() ? "Observed" : "Managed"} nodes only; gaps between heights are compressed` : "";
   $("#workspaceFooter").textContent = monitoring() ? `${networkLabel()} · ${observing() ? "Read-only observer · Node services managed on their host" : "Persistent monitoring · Mining and forks available on regtest"}` : "Local experiment · Regtest";
   $("#forkButton").hidden = !supports("forks");
@@ -698,7 +698,7 @@ function addNodeDialog() {
 }
 
 function peerFields(node = {}) {
-  return `<label class="check-label peer-discovery"><input type="checkbox" name="public_network" ${node.public_network !== false ? "checked" : ""}> Discover public ${escape(networkLabel())} peers automatically</label><label class="field">Additional peers<textarea name="peers" rows="3" spellcheck="false" placeholder="host:${networkName() === "signet" ? 38333 : 48333}">${escape((node.configured_peers || []).join("\n"))}</textarea><small>One host:port per line, or separated by commas. IPv6 addresses use [address]:port. With discovery off and this field empty, only connections you create between lab nodes are used.</small></label>`;
+  return `<label class="check-label peer-discovery"><input type="checkbox" name="public_network" ${node.public_network !== false ? "checked" : ""}> Discover public ${escape(networkLabel())} peers automatically</label><label class="field">Additional peers<textarea name="peers" rows="3" spellcheck="false" placeholder="host:${networkName() === "testnet5" ? 18353 : 48333}">${escape((node.configured_peers || []).join("\n"))}</textarea><small>${networkName() === "testnet5" ? "A fresh Testnet5 node needs a reachable peer to bootstrap. " : ""}Enter one host:port per line, or separate them with commas. IPv6 addresses use [address]:port. With discovery off and this field empty, only connections you create between lab nodes are used.</small></label>`;
 }
 
 function peerValues(values) {
@@ -819,7 +819,10 @@ document.addEventListener("click", event => {
     switch (control.dataset.action) {
       case "add-node": addNodeDialog(); break;
       case "bootstrap": if (supports("bootstrap")) safeAction("bootstrap", {count: 3, mode: "headers"}); break;
-      case "monitor": if (monitoring()) safeAction("add_node", {name: "A", mode: "headers", public_network: true, peers: []}); break;
+      case "monitor":
+        if (networkName() === "testnet4") safeAction("add_node", {name: "A", mode: "headers", public_network: true, peers: []});
+        else if (networkName() === "testnet5") addNodeDialog();
+        break;
       case "connections": connectionsDialog(); break;
       case "mode": modeDialog(control.dataset.id || selectedNode); break;
       case "peers": peersDialog(control.dataset.id || selectedNode); break;

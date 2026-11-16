@@ -8,6 +8,7 @@ from abc import ABC, abstractmethod
 
 
 class Network(ABC):
+    genesis = None
     name = ""
     chain_directory = ""
     persistent = False
@@ -51,7 +52,20 @@ class Testnet4(Network):
         return ["-testnet4"]
 
 
-class Signet(Testnet4):
+class Testnet5(Network):
+    genesis = "00000000000008c1637e7d3252dc1c333d4546fd6fff6a474b200d674a91d497"
+    name = "testnet5"
+    chain_directory = "testnet5"
+    persistent = True
+    public_peers = True
+
+    def arguments(self):
+        return ["-testnet5"]
+
+
+class Signet(Network):
+    persistent = True
+    public_peers = True
     name = "signet"
     chain_directory = "signet"
 

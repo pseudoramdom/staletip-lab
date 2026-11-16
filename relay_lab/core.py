@@ -131,6 +131,8 @@ class Node:
                     raise RuntimeError("%s exited during startup. %s" % (self.name, tail))
                 try:
                     self.rpc("getblockcount")
+                    if self.network.genesis and self.rpc("getblockhash", 0) != self.network.genesis:
+                        raise ValueError("The node uses a different genesis block from live Testnet5")
                     self.status = "running"
                     return
                 except RPCError:
@@ -183,8 +185,8 @@ class Lab:
         if not self.observer and (self.binary is None or not self.binary.is_file()):
             raise ValueError("bitcoind not found in %s" % self.bin_dir)
         self.network = network or Regtest()
-        if self.observer and self.network.name not in ("testnet4", "signet"):
-            raise ValueError("Observer mode supports testnet4 and signet")
+        if self.observer and self.network.name not in ("testnet4", "testnet5", "signet"):
+            raise ValueError("Observer mode supports testnet4, testnet5 and signet")
         self.run_dir.mkdir(parents=True, exist_ok=True)
         self._profile_lock = None
         if self.network.persistent:
@@ -361,13 +363,13 @@ class Lab:
         if not self.network.mining and (action in ("mine", "miner", "fork", "bootstrap") or "seed_from" in params):
             raise ValueError("Mining, fork creation, and starter chains are available only on regtest")
         if self.network.persistent and action == "reset":
-            raise ValueError("Testnet4 retains its downloaded chain; use Clear timeline or stop nodes instead")
+            raise ValueError(f"{self.network.name.capitalize()} retains its downloaded chain; use Clear timeline or stop nodes instead")
         if action == "set_peers" and not self.network.public_peers:
-            raise ValueError("Public peer settings are available only on testnet4")
+            raise ValueError("Public peer settings are available only on testnet4 and testnet5")
         if action in ("add_node", "set_peers"):
             public, peers = self._peer_settings(params.get("public_network", self.network.public_peers), params.get("peers", []))
             if not self.network.public_peers and (public or peers):
-                raise ValueError("Public peer settings are available only on testnet4")
+                raise ValueError("Public peer settings are available only on testnet4 and testnet5")
 
     @staticmethod
     def _peer_settings(public_network, peers):
@@ -438,7 +440,7 @@ class Lab:
         self._publish_controls()
         if any(node.desired_running for node in self._nodes.values()):
             job = {"id": secrets.token_hex(6), "action": "resume_profile", "status": "queued",
-                   "message": "Resuming saved testnet4 nodes", "created_at": time.time()}
+                   "message": f"Resuming saved {self.network.name} nodes", "created_at": time.time()}
             self._jobs.append(job)
             self._queue.put_nowait((job, {}))
 
@@ -480,7 +482,7 @@ class Lab:
             raise ValueError("Node names must contain 1–40 characters")
         public, peers = self._peer_settings(self.network.public_peers if public_network is None else public_network, peers or [])
         if not self.network.public_peers and (public or peers):
-            raise ValueError("Public peer settings are available only on testnet4")
+            raise ValueError("Public peer settings are available only on testnet4 and testnet5")
         node_id = "fork-" + secrets.token_hex(4) if helper else "n%d" % (max((int(n[1:]) for n in self._nodes), default=0) + 1)
         datadir = self.run_dir / ("forks" if helper else "nodes") / node_id
         node = Node(node_id, name, self._mode(mode), datadir, self.binary, self.network, self._port(), self._port(),
@@ -812,7 +814,12 @@ class Lab:
         # Header synchronization can lead validation by hundreds of thousands
         # of blocks. Walking from that header tip would block all controls.
         tips_available = not (self.network.public_peers and info["initialblockdownload"])
-        tips = node.rpc("getchaintips", max_depth=1000) if tips_available else [active_tip]
+        tips = [active_tip]
+        if tips_available:
+            if self.observer and network.get("localfeatures") is None:
+                tips = [tip for tip in node.rpc("getchaintips") if tip["height"] >= info["blocks"] - 1000]
+            else:
+                tips = node.rpc("getchaintips", max_depth=1000)
         cutoff = max(0, info["blocks"] - self.WINDOW + 1)
         records, active, validated, tip_status = {}, set(), set(), {}
         shown_tips = sorted(tips, key=lambda item: (item["status"] != "active", -item["height"]))[:64]

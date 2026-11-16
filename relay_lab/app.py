@@ -136,21 +136,21 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(description="Run a regtest laboratory or monitor testnet4 and signet.")
-    parser.add_argument("--bin-dir", type=Path, help="Directory containing the BIP332 bitcoind and bitcoin-cli (default: BITCOIN_BIN_DIR, then PATH)")
-    parser.add_argument("--network", choices=("regtest", "testnet4", "signet"), default="regtest", help="Network to run (default: regtest)")
-    parser.add_argument("--port", type=int, help="Loopback web port (default: regtest 8765, testnet4 8766, signet 8767)")
+    parser = argparse.ArgumentParser(description="Run a regtest laboratory or monitor testnet4, testnet5 and signet.")
+    parser.add_argument("--bin-dir", type=Path, help="Directory containing the BIP332 bitcoind and bitcoin-cli (default: TESTNET5_BITCOIN_BIN_DIR for testnet5, otherwise BITCOIN_BIN_DIR, then PATH)")
+    parser.add_argument("--network", choices=("regtest", "testnet4", "testnet5", "signet"), default="regtest", help="Network to run (default: regtest)")
+    parser.add_argument("--port", type=int, help="Loopback web port (default: regtest 8765, testnet4 8766, signet 8767, testnet5 8768)")
     parser.add_argument("--data-dir", type=Path, default=Path(__file__).resolve().parents[1] / "runs", help="Parent directory for retained session artifacts")
     parser.add_argument("--observe", type=Path, help="JSON configuration for read-only monitoring of existing nodes")
     args = parser.parse_args(argv)
     if args.port is None:
-        args.port = {"regtest": 8765, "testnet4": 8766, "signet": 8767}[args.network]
+        args.port = {"regtest": 8765, "testnet4": 8766, "testnet5": 8768, "signet": 8767}[args.network]
     if not 1 <= args.port <= 65535:
         parser.error("--port must be between 1 and 65535")
     observers = None
     if args.observe:
         if args.network == "regtest":
-            parser.error("Observer mode supports testnet4 and signet; choose --network")
+            parser.error("Observer mode supports testnet4, testnet5 and signet; choose --network")
         try:
             config = json.loads(args.observe.expanduser().read_text())
             observers = config["nodes"]
@@ -163,12 +163,12 @@ def main(argv=None):
         if args.network == "signet":
             parser.error("Signet currently requires --observe; mining and managed nodes are not supported")
         try:
-            args.bin_dir = find_bin_dir(args.bin_dir)
+            args.bin_dir = find_bin_dir(args.bin_dir, args.network)
         except ValueError as error:
             parser.error(str(error))
     from .core import Lab
-    from .networks import Regtest, Testnet4, Signet
-    network = {"regtest": Regtest, "testnet4": Testnet4, "signet": Signet}[args.network]()
+    from .networks import Regtest, Testnet4, Testnet5, Signet
+    network = {"regtest": Regtest, "testnet4": Testnet4, "testnet5": Testnet5, "signet": Signet}[args.network]()
     run_id = (("observe-" if observers is not None else "") + network.name) if network.persistent else datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + "-" + uuid.uuid4().hex[:6]
     run_dir = args.data_dir.expanduser().resolve() / run_id
     run_dir.mkdir(parents=True, exist_ok=network.persistent, mode=0o700)

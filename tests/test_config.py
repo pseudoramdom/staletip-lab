@@ -35,6 +35,15 @@ class BinaryConfigurationTests(unittest.TestCase):
             self.assertEqual(find_bin_dir(), directory.resolve())
             which.assert_not_called()
 
+    def test_testnet5_selects_its_own_build(self):
+        standard = self.binaries("relay")
+        testnet5 = self.binaries("relay-testnet5")
+        with patch.dict(os.environ, {"BITCOIN_BIN_DIR": str(standard), "TESTNET5_BITCOIN_BIN_DIR": str(testnet5)}):
+            for network in ("regtest", "testnet4", "signet"):
+                self.assertEqual(find_bin_dir(network=network), standard.resolve())
+            self.assertEqual(find_bin_dir(network="testnet5"), testnet5.resolve())
+            self.assertEqual(find_bin_dir(standard, "testnet5"), standard.resolve())
+
     def test_path_requires_both_executables(self):
         directory = self.binaries("path")
         with patch.dict(os.environ, {"BITCOIN_BIN_DIR": ""}), patch("relay_lab.config.shutil.which", return_value=str(directory / "bitcoind")):
